@@ -137,10 +137,10 @@ Get detailed information about a specific song.
 
 ```bash
 # Path parameter
-curl "http://localhost:3000/api/songs/tune-ka-mathabhar"
+curl "http://localhost:3000/api/songs/manjha"
 
 # Query parameter with URL
-curl "http://localhost:3000/api/songs?url=https://gaana.com/song/tune-ka-mathabhar"
+curl "http://localhost:3000/api/songs?url=https://gaana.com/song/manjha"
 ```
 
 **Response:**
