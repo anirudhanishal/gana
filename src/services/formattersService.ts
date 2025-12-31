@@ -210,89 +210,9 @@ export class FormattersService extends BaseService {
   /**
    * Format album API response - full details
    */
-  async formatJsonAlbums(results: unknown, info: boolean): Promise<Record<string, unknown>> {
-    if (!results || typeof results !== 'object') return {}
-    const r = results as {
-      album: {
-        seokey: string
-        album_id: string
-        title: string
-        artist: unknown
-        parental_warning: number
-        language: string
-        recordlevel: string
-        trackcount: number
-        duration: number
-        release_date?: string
-        al_play_ct: number
-        favorite_count: number
-        artwork: string
-      }
-      tracks: Array<{ artist: unknown }>
-    }
-    const data: Record<string, unknown> = {}
-    try {
-      data.seokey = r.album.seokey
-    } catch {
-      return { error: this.errors.noResults() }
-    }
-    data.album_id = r.album.album_id
-    data.title = r.album.title
-    try {
-      const track = r.tracks[0] as {
-        artist: unknown
-        artist_detail?: ArtistDetail[]
-      }
-      const albumArtists = r.album.artist as Array<{ name: string }>
-      const hasAlbumArtists = Array.isArray(albumArtists) && albumArtists.length > 0
-
-      data.artists = hasAlbumArtists
-        ? this.functions.findArtistNames(albumArtists)
-        : track.artist_detail
-            ?.filter((a) => a.role.includes('Singer'))
-            ?.map((a) => a.name)
-            ?.join(', ') || ''
-      const trackArtists: TrackArtist[] =
-        Array.isArray(track.artist) && track.artist.length > 0
-          ? (track.artist as TrackArtist[])
-          : (track.artist_detail?.map((a: ArtistDetail) => ({
-              name: a.name,
-              seokey: a.seokey ?? '',
-              artist_id: a.artist_id ?? '',
-              id: a.artist_id ?? ''
-            })) ?? [])
-      data.artist_seokeys = this.functions.findArtistSeoKeys(trackArtists.map((a) => ({ seokey: a.seokey ?? '' })))
-      data.artist_ids = this.functions.findArtistIds(
-        trackArtists.map((a) => ({ artist_id: a.artist_id ?? a.id ?? '' }))
-      )
-    } catch {
-      data.artists = ''
-      data.artist_seokeys = ''
-      data.artist_ids = ''
-    }
-    data.duration = r.album.duration
-    data.is_explicit = this.functions.isExplicit(r.album.parental_warning)
-    data.language = r.album.language
-    data.label = r.album.recordlevel
-    data.track_count = r.album.trackcount
-    data.release_date = r.album.release_date ?? ''
-    data.play_count = r.album.al_play_ct
-    data.favorite_count = r.album.favorite_count
-    data.album_url = `https://gaana.com/album/${r.album.seokey}`
-    // Get best artwork URL - prefer large
-    const artwork = r.album.artwork || ''
-    let artworkUrl = artwork
-    if (artwork.includes('size_s.jpg')) {
-      artworkUrl = artwork.replace('size_s.jpg', 'size_l.jpg')
-    } else if (artwork.includes('size_m.jpg')) {
-      artworkUrl = artwork.replace('size_m.jpg', 'size_l.jpg')
-    }
-    data.artworkUrl = artworkUrl
-    if (info) {
-      data.tracks = [] // Will be populated by detailsService
-    }
-    return data
-  }
+  async formatJsonAlbums(results: unknown): Promise<Record<string, unknown>> {
+  return results as Record<string, unknown>
+}
 
   /**
    * Format song/track API response from search
