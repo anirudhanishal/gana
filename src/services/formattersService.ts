@@ -211,26 +211,9 @@ export class FormattersService extends BaseService {
  * Return ORIGINAL album + tracks without modification
  */
 async formatJsonAlbums(
-  results: unknown,
-  info: boolean
+  results: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  if (!results || typeof results !== 'object') {
-    return {}
-  }
-
-  const r = results as {
-    album?: unknown
-    tracks?: unknown[]
-  }
-
-  if (!r.album) {
-    return { error: this.errors.noResults() }
-  }
-
-  return {
-    album: r.album,     // 🔹 original album object
-    tracks: r.tracks ?? [] // 🔹 original tracks array
-  }
+  return results
 }
 
   /**
