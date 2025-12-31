@@ -346,9 +346,8 @@ export class FormattersService extends BaseService {
    * Returns exactly the same structure as formatJsonSongDetails for consistency
    */
   async formatJsonSongFullDetails(results: Record<string, unknown>): Promise<Record<string, unknown>> {
-    // Return exactly the same format as song search/details
-    return await this.formatJsonSongDetails(results)
-  }
+  return results
+}
 
   /**
    * Format song detail API response - simplified with only essential fields
