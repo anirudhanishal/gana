@@ -16,7 +16,7 @@ export class FormattersService extends BaseService {
   /**
    * Returns raw playlist search API response.
    * @param result - The raw API response
-   * @param limit - Ignored in raw mode
+   * @param limit - Ignored to preserve raw data
    */
   formatJsonPlaylistSearch(result: unknown, limit: number): any {
     return result
@@ -41,7 +41,7 @@ export class FormattersService extends BaseService {
   /**
    * Returns raw album API response.
    * @param results - The raw API response
-   * @param info - Ignored in raw mode
+   * @param info - Ignored to preserve raw data
    */
   async formatJsonAlbums(results: unknown, info: boolean): Promise<any> {
     return results
@@ -111,7 +111,7 @@ export class FormattersService extends BaseService {
     return results
   }
 
-  
+  /**
    * Returns raw artist top tracks API response.
    * @param results - The raw API response
    */
