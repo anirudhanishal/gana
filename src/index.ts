@@ -1,139 +1,128 @@
 /**
- * @fileoverview Main application entry point and Hono app configuration.
- * Sets up middleware, routes, and error handling for the Gaana API.
- * @module index
+ * Main API Entry File
+ * Direct Gaana API proxy
+ * Returns original response without modification
  */
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { prettyJSON } from 'hono/pretty-json'
-import { errorHandler, logger as customLogger } from './middleware/index.js'
-import router from './routes/index.js'
 
-/**
- * API app with base path /api
- * Contains all API endpoints
- */
-const apiApp = new Hono()
-
-// Global middleware - applied to all API routes
-apiApp.use('*', cors())
-apiApp.use('*', logger())
-apiApp.use('*', prettyJSON())
-apiApp.use('*', customLogger)
-apiApp.use('*', errorHandler)
-
-/**
- * Root endpoint - API information and documentation.
- * Returns API version, status, and available endpoints.
- *
- * @route GET /api
- * @returns {Object} API information object
- */
-apiApp.get('/', (c) => {
-  return c.json({
-    message: '🎵 Gaana API',
-    version: '1.0.0',
-    status: 'running',
-    documentation: 'https://github.com/notdeltaxd/Gaana-API',
-    endpoints: {
-      search: {
-        global: 'GET /api/search?q=query&limit=10',
-        songs: 'GET /api/search/songs?q=query&limit=10',
-        albums: 'GET /api/search/albums?q=query&limit=10',
-        playlists: 'GET /api/search/playlists?q=query&limit=10',
-        artists: 'GET /api/search/artists?q=query&limit=10'
-      },
-      resources: {
-        song: 'GET /api/songs/:id or GET /api/songs?url=https://gaana.com/song/:id or GET /api/songs?seokey=:id',
-        album: 'GET /api/albums/:id or GET /api/albums?url=https://gaana.com/album/:id or GET /api/albums?seokey=:id',
-        playlist:
-          'GET /api/playlists/:id or GET /api/playlists?url=https://gaana.com/playlist/:id or GET /api/playlists?seokey=:id',
-        artist:
-          'GET /api/artists/:id or GET /api/artists?url=https://gaana.com/artist/:id or GET /api/artists?seokey=:id'
-      },
-      browse: {
-        trending: 'GET /api/trending?language=hi&limit=10',
-        charts: 'GET /api/charts?limit=10',
-        newReleases: 'GET /api/new-releases?language=hi'
-      },
-      system: {
-        health: 'GET /api/health'
-      }
-    }
-  })
-})
-
-// Register all REST API routes
-apiApp.route('', router)
-
-/**
- * 404 Not Found handler for API routes.
- * Returns a standardized error response for unmatched routes.
- *
- * @param {Context} ctx - Hono context object
- * @returns {Response} JSON error response with 404 status
- */
-apiApp.notFound((ctx) => {
-  return ctx.json(
-    {
-      success: false,
-      error: 'Not found - check API documentation',
-      timestamp: new Date()
-    },
-    404
-  )
-})
-
-/**
- * Main application instance.
- * Handles root endpoint and mounts API app at /api
- */
 const app = new Hono()
 
-// Global middleware for root app
 app.use('*', cors())
 app.use('*', logger())
 app.use('*', prettyJSON())
 
-/**
- * Root endpoint handler.
- * Shows API information and redirects users to /api
- *
- * @route GET /
- * @returns {Object} Root endpoint information
- */
+/* Root */
 app.get('/', (c) => {
   return c.json({
-    message: '🎵 Gaana API',
-    version: '1.0.0',
+    message: 'Gaana API',
     status: 'running',
-    documentation: 'https://github.com/notdeltaxd/Gaana-API',
-    note: 'All API endpoints are available at /api',
-    quickStart: 'Visit /api to see all available endpoints',
-    example: 'GET /api/search?q=despacito&limit=10'
+    note: 'All endpoints available under /api'
   })
 })
 
-// Mount API app at /api
-app.route('/api', apiApp)
+/* API Router */
+app.get('/api', (c) => {
+  return c.json({
+    endpoints: {
+      search: '/api/search?q=keyword',
+      song: '/api/songs?id=seokey',
+      album: '/api/albums?id=seokey',
+      playlist: '/api/playlists?id=seokey',
+      artist: '/api/artists?id=artist_id',
+      trending: '/api/trending',
+      charts: '/api/charts',
+      newReleases: '/api/new-releases'
+    }
+  })
+})
 
-/**
- * 404 Not Found handler for root app.
- * Returns a helpful message directing users to /api
- *
- * @param {Context} ctx - Hono context object
- * @returns {Response} JSON error response with 404 status
- */
-app.notFound((ctx) => {
-  return ctx.json(
+/* SEARCH */
+app.get('/api/search', async (c) => {
+  const q = c.req.query('q') || ''
+  const url = `https://gaana.com/apiv2?country=IN&page=1&secType=track&type=search&keyword=${q}`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* SONG DETAILS */
+app.get('/api/songs', async (c) => {
+  const id = c.req.query('id')
+  const url = `https://gaana.com/apiv2?type=songDetail&seokey=${id}`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* ALBUM DETAILS */
+app.get('/api/albums', async (c) => {
+  const id = c.req.query('id')
+  const url = `https://gaana.com/apiv2?type=albumDetail&seokey=${id}`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* PLAYLIST DETAILS */
+app.get('/api/playlists', async (c) => {
+  const id = c.req.query('id')
+  const url = `https://gaana.com/apiv2?type=playlistDetail&seokey=${id}`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* ARTIST DETAILS */
+app.get('/api/artists', async (c) => {
+  const id = c.req.query('id')
+
+  const url =
+    `https://gaana.com/apiv2?language=&order=0&page=0&sortBy=popularity&type=artistTrackList&id=${id}`
+
+  const res = await fetch(url)
+  const data = await res.json()
+
+  return c.json({
+    api: url,
+    raw: data
+  })
+})
+
+/* TRENDING */
+app.get('/api/trending', async (c) => {
+  const url = `https://gaana.com/apiv2?type=miscTrendingSongs`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* CHARTS */
+app.get('/api/charts', async (c) => {
+  const url = `https://apiv2.gaana.com/home/playlist/top-charts?view=all&limit=0`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* NEW RELEASES */
+app.get('/api/new-releases', async (c) => {
+  const lang = c.req.query('language') || 'hi'
+  const url = `https://gaana.com/apiv2?page=0&type=miscNewRelease&language=${lang}`
+  const res = await fetch(url)
+  const data = await res.json()
+  return c.json({ api: url, raw: data })
+})
+
+/* 404 */
+app.notFound((c) => {
+  return c.json(
     {
       success: false,
-      error: 'Not found - All API endpoints are available at /api',
-      documentation: 'https://github.com/notdeltaxd/Gaana-API',
-      example: 'GET /api/search?q=despacito',
-      timestamp: new Date()
+      message: 'Invalid API endpoint'
     },
     404
   )
