@@ -1,323 +1,173 @@
 /**
- * @fileoverview Single-file Gaana Song Details API.
- * Contains all logic: Server, Middleware, Services, Utilities, and Validation.
+ * @fileoverview Single-file Gaana API (Song Details Only).
+ * * Requirement:
+ * - API URL: https://gaana.com/apiv2?type=songDetail&seokey=...
+ * - Live URL: /api/songs?seokey=...
  */
 
-import { Hono, Context, Next } from 'hono'
+import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
-import { prettyJSON } from 'hono/pretty-json'
-import { z } from 'zod'
 import * as crypto from 'crypto'
 
 // ==========================================
-// 1. CONSTANTS
+// 1. CONFIGURATION & CONSTANTS
 // ==========================================
 
-const apiEndpoints = {
-  songDetailsUrl: 'https://gaana.com/apiv2?type=songDetail&seokey=',
-} as const
+const GAANA_API_URL = 'https://gaana.com/apiv2?type=songDetail&seokey='
 
-const userAgents = [
+// AES-128-CBC Keys for Decryption
+const DEC_IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
+const DEC_KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
+
+const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
 // ==========================================
-// 2. UTILITIES
+// 2. HELPER FUNCTIONS
 // ==========================================
 
-function getRandomUserAgent(): string {
-  return userAgents[Math.floor(Math.random() * userAgents.length)]
-}
+/**
+ * Decrypts encrypted stream URLs from Gaana.
+ */
+function decryptLink(encryptedData: string): string {
+  try {
+    if (!encryptedData || encryptedData.length < 20) return encryptedData
 
-function getBrowserHeaders(): Record<string, string> {
-  const ua = getRandomUserAgent()
-  return {
-    'User-Agent': ua,
-    Accept: 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    Origin: 'https://gaana.com',
-    Referer: 'https://gaana.com/',
+    // Logic: Extract offset, slice IV, decode Base64, Decrypt AES-128-CBC
+    const offset = parseInt(encryptedData[0], 10)
+    if (isNaN(offset)) return encryptedData
+
+    const ciphertextB64 = encryptedData.substring(offset + 16)
+    const ciphertext = Buffer.from(ciphertextB64, 'base64')
+
+    const decipher = crypto.createDecipheriv('aes-128-cbc', DEC_KEY, DEC_IV)
+    decipher.setAutoPadding(false)
+
+    let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+    let rawText = decrypted.toString('utf-8')
+
+    // Clean up characters
+    rawText = rawText.replace(/[^\x20-\x7E]/g, '')
+
+    // Fix HLS paths for playback
+    if (rawText.includes('hls/')) {
+      const pathStart = rawText.indexOf('hls/')
+      const cleanPath = rawText.substring(pathStart)
+      return `https://vodhlsgaana-ebw.akamaized.net/${cleanPath}`
+    }
+    
+    return rawText || encryptedData
+  } catch (e) {
+    return encryptedData
   }
 }
 
 /**
- * Extracts seokey from a URL or returns the input if it's already a seokey.
+ * Recursively finds and decrypts "message" fields inside "urls" objects.
  */
-function extractSeokey(input: string): string | null {
-  if (!input) return null
-  try {
-    // If it looks like a URL
-    if (input.startsWith('http')) {
-      const url = new URL(input)
-      // specific logic for gaana.com/song/seokey
-      const parts = url.pathname.split('/').filter(Boolean)
-      return parts.length > 0 ? parts[parts.length - 1] : null
-    }
-    return input
-  } catch {
-    return input // fallback
-  }
-}
+function traverseAndDecrypt(data: any): any {
+  if (!data || typeof data !== 'object') return data
 
-// ==========================================
-// 3. VALIDATION SCHEMAS (ZOD)
-// ==========================================
-
-const validationSchemas = {
-  seokey: z
-    .string()
-    .min(1, 'Seokey is required')
-    .max(500, 'Seokey is too long')
-    .refine((val) => val.trim().length > 0, 'Seokey cannot be empty')
-    .refine((val) => !/[<>'"&]/.test(val), 'Seokey contains invalid characters'),
-}
-
-// ==========================================
-// 4. SERVICES
-// ==========================================
-
-class BaseService {
-  protected async fetchJson(
-    url: string,
-    method: 'GET' | 'POST' = 'POST',
-    headers: Record<string, string> = {},
-    timeout: number = 5000
-  ): Promise<unknown> {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), timeout)
-
-    try {
-      const finalHeaders = { ...getBrowserHeaders(), ...headers }
-      const response = await fetch(url, {
-        method,
-        headers: finalHeaders,
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
-      return await response.json()
-    } catch (error) {
-      clearTimeout(timeoutId)
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('Request timeout')
-      }
-      throw error
-    }
-  }
-}
-
-class FormattersService extends BaseService {
-  private readonly IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
-  private readonly KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
-
-  private decryptLink(encryptedData: string): string {
-    try {
-      if (!encryptedData || encryptedData.length < 20) return encryptedData
-
-      const offset = parseInt(encryptedData[0], 10)
-      if (isNaN(offset)) return encryptedData
-
-      const ciphertextB64 = encryptedData.substring(offset + 16)
-      const ciphertext = Buffer.from(ciphertextB64, 'base64')
-
-      const decipher = crypto.createDecipheriv('aes-128-cbc', this.KEY, this.IV)
-      decipher.setAutoPadding(false)
-
-      let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-      let rawText = decrypted.toString('utf-8')
-
-      // Remove non-printable characters
-      rawText = rawText.replace(/[^\x20-\x7E]/g, '')
-
-      if (rawText.includes('hls/')) {
-        const pathStart = rawText.indexOf('hls/')
-        const cleanPath = rawText.substring(pathStart)
-        return `https://vodhlsgaana-ebw.akamaized.net/${cleanPath}`
-      }
-      
-      return rawText || encryptedData
-    } catch (error) {
-      return encryptedData
-    }
-  }
-
-  private traverseAndDecrypt(data: any): any {
-    if (!data || typeof data !== 'object') return data
-
-    if (data.urls && typeof data.urls === 'object' && !Array.isArray(data.urls)) {
-      const qualities = ['auto', 'high', 'medium', 'low']
-      for (const quality of qualities) {
-        if (data.urls[quality] && data.urls[quality].message) {
-          data.urls[quality].message = this.decryptLink(data.urls[quality].message)
-        }
+  // Check specific "urls" structure
+  if (data.urls && typeof data.urls === 'object' && !Array.isArray(data.urls)) {
+    const qualities = ['auto', 'high', 'medium', 'low']
+    for (const quality of qualities) {
+      if (data.urls[quality]?.message) {
+        data.urls[quality].message = decryptLink(data.urls[quality].message)
       }
     }
+  }
 
-    for (const key in data) {
-      if (Object.prototype.hasOwnProperty.call(data, key)) {
-        const value = data[key]
-        if (typeof value === 'object' && value !== null) {
-          this.traverseAndDecrypt(value)
-        }
+  // Traverse children
+  for (const key in data) {
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+      const value = data[key]
+      if (typeof value === 'object' && value !== null) {
+        traverseAndDecrypt(value)
       }
     }
-
-    return data
   }
-
-  async formatJsonSongFullDetails(results: Record<string, unknown>): Promise<any> {
-    return this.traverseAndDecrypt(results)
-  }
+  return data
 }
 
-class DetailsService extends BaseService {
-  private formatters: FormattersService
-
-  constructor() {
-    super()
-    this.formatters = new FormattersService()
+/**
+ * Fetches data from Gaana with browser-like headers.
+ */
+async function fetchSongDetails(seokey: string) {
+  const url = `${GAANA_API_URL}${seokey}`
+  const headers = {
+    'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+    'Accept': 'application/json, text/plain, */*',
+    'Origin': 'https://gaana.com',
+    'Referer': 'https://gaana.com/'
   }
 
-  async getSongInfo(seokey: string): Promise<Record<string, unknown>> {
-    const url = apiEndpoints.songDetailsUrl + seokey
-    const result = await this.fetchJson(url)
-
-    if (!result || typeof result !== 'object') {
-      return { error: 'Song not found' }
-    }
-
-    const r = result as { tracks?: Array<Record<string, unknown>> }
-    if (!r.tracks || !Array.isArray(r.tracks) || r.tracks.length === 0) {
-      return { error: 'Song not found' }
-    }
-
-    return await this.formatters.formatJsonSongFullDetails(r.tracks[0])
-  }
-}
-
-// Singleton Instance
-const detailsService = new DetailsService()
-
-// ==========================================
-// 5. HANDLERS
-// ==========================================
-
-async function handleGetSong(c: Context) {
-  // 1. Get Input
-  const pathParam = c.req.param('seokey')
-  const queryParam = c.req.query('url') || c.req.query('seokey')
-  const input = pathParam || queryParam
-
-  if (!input) {
-    return c.json({ error: 'Seokey or URL is required' }, 400)
-  }
-
-  // 2. Validate
-  const validation = validationSchemas.seokey.safeParse(input)
-  if (!validation.success) {
-    return c.json({ error: validation.error.issues[0]?.message || 'Invalid input' }, 400)
-  }
-
-  try {
-    // 3. Extract Seokey
-    const seokey = extractSeokey(validation.data)
-    if (!seokey) {
-      return c.json({ error: 'Invalid URL or Seokey format' }, 400)
-    }
-
-    // 4. Fetch Data
-    const songInfo = await detailsService.getSongInfo(seokey)
-
-    if (songInfo.error) {
-      return c.json(songInfo, 404)
-    }
-
-    return c.json(songInfo)
-  } catch (err) {
-    console.error('Get song error:', err)
-    return c.json({ error: err instanceof Error ? err.message : 'Failed to get song' }, 500)
-  }
-}
-
-async function handleHealth(c: Context) {
-  return c.json({
-    status: 'ok',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    service: 'Gaana Song API'
-  })
+  const response = await fetch(url, { method: 'POST', headers })
+  const json = await response.json()
+  return json
 }
 
 // ==========================================
-// 6. MIDDLEWARE
+// 3. APP & ROUTES
 // ==========================================
 
-const customErrorHandler = async (ctx: Context, next: Next) => {
-  try {
-    await next()
-  } catch (error) {
-    console.error('Error:', error)
-    return ctx.json({ success: false, error: 'Internal server error' }, 500)
-  }
-}
-
-const customLogger = async (ctx: Context, next: Next) => {
-  const start = Date.now()
-  await next()
-  const duration = Date.now() - start
-  console.log(`${ctx.req.method} ${ctx.req.path} - ${duration}ms`)
-}
-
-// ==========================================
-// 7. APP SETUP
-// ==========================================
-
-const apiApp = new Hono()
-
-// Apply Middleware
-apiApp.use('*', cors())
-apiApp.use('*', logger())
-apiApp.use('*', prettyJSON())
-apiApp.use('*', customLogger)
-apiApp.use('*', customErrorHandler)
-
-// Define Routes
-apiApp.get('/', (c) => {
-  return c.json({
-    message: '🎵 Gaana Song Details API',
-    endpoints: {
-      song: 'GET /api/songs/:id or GET /api/songs?seokey=:id',
-      health: 'GET /api/health'
-    }
-  })
-})
-
-apiApp.get('/health', handleHealth)
-apiApp.get('/songs', handleGetSong)
-apiApp.get('/songs/:seokey', handleGetSong)
-
-// 404 Handler for API
-apiApp.notFound((ctx) => {
-  return ctx.json({ success: false, error: 'Not found' }, 404)
-})
-
-// Main App
 const app = new Hono()
 
-// Root Redirect/Info
-app.get('/', (c) => {
-  return c.json({
-    message: '🎵 Gaana Song Details API',
-    status: 'running',
-    usage: 'GET /api/songs?seokey=your-song-seokey'
-  })
+// Middleware
+app.use('*', cors())
+
+/**
+ * Main Route: Song Details
+ * Endpoint: /api/songs?seokey=...
+ */
+app.get('/api/songs', async (c) => {
+  try {
+    // 1. Get Seokey
+    const seokey = c.req.query('seokey')
+    const urlParam = c.req.query('url')
+    
+    // Allow 'url' param too, but extract seokey from it if present
+    let finalSeokey = seokey
+    if (!finalSeokey && urlParam) {
+       const parts = urlParam.split('/').filter(Boolean)
+       finalSeokey = parts[parts.length - 1]
+    }
+
+    if (!finalSeokey) {
+      return c.json({ error: 'Parameter "seokey" is required' }, 400)
+    }
+
+    // 2. Fetch from Gaana
+    const rawData = await fetchSongDetails(finalSeokey) as any
+
+    // 3. Validation
+    if (!rawData || !rawData.tracks || !Array.isArray(rawData.tracks) || rawData.tracks.length === 0) {
+      return c.json({ error: 'Song not found or invalid seokey' }, 404)
+    }
+
+    // 4. Decrypt URLs
+    const songData = traverseAndDecrypt(rawData.tracks[0])
+
+    // 5. Return
+    return c.json(songData)
+    
+  } catch (error) {
+    console.error(error)
+    return c.json({ error: 'Internal Server Error' }, 500)
+  }
 })
 
-// Mount API
-app.route('/api', apiApp)
+/**
+ * Root Route (Documentation)
+ */
+app.get('/', (c) => {
+  return c.json({
+    service: 'Gaana Song Details API',
+    status: 'active',
+    example: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho'
+  })
+})
 
 export default app
