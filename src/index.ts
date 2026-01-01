@@ -1,3 +1,9 @@
+/**
+ * Main API Entry
+ * Gaana Song Details API
+ * Edge compatible
+ */
+
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { prettyJSON } from 'hono/pretty-json'
@@ -6,6 +12,7 @@ export const runtime = 'edge'
 
 const app = new Hono()
 
+/* Global middleware */
 app.use('*', cors())
 app.use('*', prettyJSON())
 
@@ -39,25 +46,41 @@ app.get('/api/songs', async (c) => {
   const apiUrl =
     `https://gaana.com/apiv2?seokey=${seokey}&type=songDetail`
 
-  const res = await fetch(apiUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0',
-      'Accept': 'application/json'
-    }
-  })
+  try {
+    const res = await fetch(apiUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': 'application/json',
+        'Referer': 'https://gaana.com/'
+      }
+    })
 
-  const data = await res.json()
+    const text = await res.text()
 
-  return c.json({
-    api: apiUrl,
-    raw: data
-  })
+    return c.json({
+      api: apiUrl,
+      raw: text
+    })
+  } catch (err) {
+    return c.json(
+      {
+        success: false,
+        message: 'Failed to fetch Gaana API',
+        error: String(err)
+      },
+      500
+    )
+  }
 })
 
 /* 404 */
 app.notFound((c) => {
   return c.json(
-    { error: 'Invalid endpoint' },
+    {
+      success: false,
+      error: 'Invalid endpoint',
+      example: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho'
+    },
     404
   )
 })
