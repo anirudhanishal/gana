@@ -1,5 +1,5 @@
 /**
- * @fileoverview Single-file Gaana API (Songs, Albums, Search & Artist Data).
+ * @fileoverview Single-file Gaana API (Songs, Albums, Search, Artist & Label Data).
  * Provides endpoints to fetch and decrypt data directly from Gaana's API.
  * * Endpoints:
  * 1. Song Details: /api/songs
@@ -7,6 +7,7 @@
  * 3. Song Search: /api/search/songs
  * 4. Artist Song List: /api/artists/songs
  * 5. Artist Album List: /api/artists/albums
+ * 6. Label Album List: /api/labels/albums
  */
 
 import { Hono } from 'hono'
@@ -93,7 +94,7 @@ function traverseAndDecrypt(data: any): any {
     }
   }
 
-  // Pattern 2: Artist Track List / Generic Lists
+  // Pattern 2: Lists (Artist/Label)
   // Structure: { "key": "stream_url", "value": { "medium": { "message": "..." } } }
   if (data.key === 'stream_url' && data.value && typeof data.value === 'object') {
     const qualities = ['auto', 'high', 'medium', 'low']
@@ -309,6 +310,36 @@ app.get('/api/artists/albums', async (c) => {
 })
 
 /**
+ * Route: Label Album List
+ * Method: GET
+ * Endpoint: /api/labels/albums
+ * Params: seokey (required), page (optional, default 0), sorting (optional, default popularity)
+ */
+app.get('/api/labels/albums', async (c) => {
+  try {
+    const seokey = getSeokeyFromContext(c)
+    const page = c.req.query('page') || '0'
+    const sorting = c.req.query('sorting') || 'popularity'
+
+    if (!seokey) {
+      return c.json({ error: 'Parameter "seokey" is required' }, 400)
+    }
+
+    const rawData = await fetchGaana({
+      type: 'musiclabelalbums',
+      seokey: seokey,
+      page: page,
+      sorting: sorting
+    })
+
+    const decryptedData = traverseAndDecrypt(rawData)
+    return c.json(decryptedData)
+  } catch (error) {
+    return c.json({ error: 'Internal Server Error' }, 500)
+  }
+})
+
+/**
  * Route: Root Documentation
  * Method: GET
  * Endpoint: /
@@ -323,7 +354,8 @@ app.get('/', (c) => {
       album_details: '/api/albums?seokey=hum-dil-de-chuke-sanam',
       song_search: '/api/search/songs?keyword=Humane%20Sagar&page=0',
       artist_songs: '/api/artists/songs?id=1242888&page=0&sortBy=popularity',
-      artist_albums: '/api/artists/albums?id=1&page=0&sortBy=popularity'
+      artist_albums: '/api/artists/albums?id=1&page=0&sortBy=popularity',
+      label_albums: '/api/labels/albums?seokey=amara-muzik-one&page=0&sorting=popularity'
     }
   })
 })
