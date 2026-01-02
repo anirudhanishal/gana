@@ -1,7 +1,7 @@
 /**
  * @fileoverview Single-file Gaana API.
  * * Universal Root Endpoints:
- * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
+ * 1. Link Handler: /?link={url}&page={0}&limit={10}&sorting={popularity}
  * 2. Search Handler: /?search={query}&page={0}&country={IN}&limit={10}
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
@@ -9,7 +9,7 @@
  * 3. Song Search: /api/search/songs
  * 4. Artist Song List: /api/artists/songs
  * 5. Artist Album List: /api/artists/albums
- * 6. Label Album List: /api/labels/albums (Now with Smart Pagination)
+ * 6. Label Album List: /api/labels/albums
  */
 
 import { Hono } from 'hono'
@@ -21,7 +21,6 @@ import * as crypto from 'crypto'
 // ==========================================
 
 const BASE_URL = 'https://gaana.com/apiv2'
-const GAANA_PAGE_SIZE = 20 // Standard batch size from Gaana
 
 // AES-128-CBC Keys for Decryption
 const DEC_IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
@@ -37,6 +36,18 @@ const USER_AGENTS = [
 // ==========================================
 // 2. HELPER FUNCTIONS
 // ==========================================
+
+/**
+ * Returns the correct batch size for a specific Gaana API type.
+ * - musiclabelalbums: Gaana API returns 50 items per page.
+ * - search/others: Gaana API returns 20 items per page.
+ */
+function getBatchSize(type: string): number {
+  if (type === 'musiclabelalbums') {
+    return 50
+  }
+  return 20
+}
 
 /**
  * Decrypts encrypted stream URLs using AES-128-CBC.
@@ -186,7 +197,7 @@ app.use('*', cors())
 /**
  * ROOT HANDLER:
  * 1. ?search={query} -> Search Songs (includes page, country, limit)
- * 2. ?link={url} -> Detect and Fetch Song/Album/Label
+ * 2. ?link={url} -> Detect and Fetch Song/Album/Label (includes page, limit, sorting)
  */
 app.get('/', async (c) => {
   const link = c.req.query('link')
@@ -199,6 +210,7 @@ app.get('/', async (c) => {
       const country = c.req.query('country') || 'IN'
       const limit = c.req.query('limit') || '10'
 
+      const batchSize = getBatchSize('search')
       let gaanaPage = page
       let sliceStart = 0
       let sliceEnd = undefined
@@ -208,8 +220,8 @@ app.get('/', async (c) => {
         const pageNum = parseInt(page, 10) || 0
         const totalOffset = pageNum * limitNum
         
-        gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
-        sliceStart = totalOffset % GAANA_PAGE_SIZE
+        gaanaPage = Math.floor(totalOffset / batchSize).toString()
+        sliceStart = totalOffset % batchSize
         sliceEnd = sliceStart + limitNum
       }
       
@@ -233,28 +245,56 @@ app.get('/', async (c) => {
   // --- 2. LINK HANDLER ---
   if (link) {
     try {
-      let type = ''
       let seokey = extractIdFromUrl(link)
-      let extraParams: Record<string, string> = {}
+      
+      // Default Params
+      const page = c.req.query('page') || '0'
+      const limit = c.req.query('limit') || '10'
+      const sorting = c.req.query('sorting') || 'popularity'
+
+      let fetchParams: Record<string, string> = {
+        type: '',
+        seokey: seokey
+      }
+
+      // Pagination Controls
+      let sliceStart = 0
+      let sliceEnd = undefined
+      let applyEntitySlice = false
 
       if (link.includes('/song/')) {
-        type = 'songDetail'
+        fetchParams.type = 'songDetail'
       } else if (link.includes('/album/')) {
-        type = 'albumDetail'
+        fetchParams.type = 'albumDetail'
       } else if (link.includes('/music-label/')) {
-        type = 'musiclabelalbums'
-        extraParams = { page: '0', sorting: 'popularity' }
+        // Label Logic with Smart Pagination
+        fetchParams.type = 'musiclabelalbums'
+        fetchParams.sorting = sorting
+        applyEntitySlice = true
+
+        const batchSize = getBatchSize('musiclabelalbums') // 50
+        const limitNum = parseInt(limit, 10)
+        const pageNum = parseInt(page, 10) || 0
+        const totalOffset = pageNum * limitNum
+        
+        const gaanaPage = Math.floor(totalOffset / batchSize).toString()
+        sliceStart = totalOffset % batchSize
+        sliceEnd = sliceStart + limitNum
+
+        fetchParams.page = gaanaPage
       } else {
         return c.json({ error: 'Unsupported link type. Use Song, Album, or Label URL.' }, 400)
       }
 
-      const rawData = await fetchGaana({
-        type: type,
-        seokey: seokey,
-        ...extraParams
-      })
+      const rawData = await fetchGaana(fetchParams)
+      const decrypted = traverseAndDecrypt(rawData)
 
-      return c.json(traverseAndDecrypt(rawData))
+      // Apply slicing if it's an entity list (like Labels)
+      if (applyEntitySlice) {
+        return c.json(applySliceToEntities(decrypted, sliceStart, sliceEnd))
+      }
+
+      return c.json(decrypted)
     } catch (error) {
       return c.json({ error: 'Internal Server Error' }, 500)
     }
@@ -269,7 +309,7 @@ app.get('/', async (c) => {
       universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
       song_details: '/api/songs?seokey=kudi-jach-gayi-14',
       album_details: '/api/albums?seokey=aau-ketedina-odia',
-      label_albums: '/api/labels/albums?seokey=rajshri-music&page=0&limit=10',
+      label_albums: '/api/labels/albums?seokey=rajshri-music&page=0&limit=10&sorting=popularity',
       search: '/api/search/songs?keyword=Humane%20Sagar&page=0&limit=10',
       artist_songs: '/api/artists/songs?id=1242888',
       artist_albums: '/api/artists/albums?id=1'
@@ -309,6 +349,7 @@ app.get('/api/search/songs', async (c) => {
 
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
 
+    const batchSize = getBatchSize('search')
     let gaanaPage = page
     let sliceStart = 0
     let sliceEnd = undefined
@@ -318,8 +359,8 @@ app.get('/api/search/songs', async (c) => {
       const pageNum = parseInt(page, 10) || 0
       const totalOffset = pageNum * limitNum
       
-      gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
-      sliceStart = totalOffset % GAANA_PAGE_SIZE
+      gaanaPage = Math.floor(totalOffset / batchSize).toString()
+      sliceStart = totalOffset % batchSize
       sliceEnd = sliceStart + limitNum
     }
     
@@ -362,7 +403,7 @@ app.get('/api/artists/albums', async (c) => {
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
-// 6. Label Albums (With Smart Pagination)
+// 6. Label Albums (With Fixed Batch Size for Correct Pagination)
 app.get('/api/labels/albums', async (c) => {
   try {
     const seokey = getSeokeyFromContext(c)
@@ -372,6 +413,7 @@ app.get('/api/labels/albums', async (c) => {
 
     if (!seokey) return c.json({ error: 'seokey/url required' }, 400)
 
+    const batchSize = getBatchSize('musiclabelalbums') // 50
     let gaanaPage = page
     let sliceStart = 0
     let sliceEnd = undefined
@@ -381,8 +423,8 @@ app.get('/api/labels/albums', async (c) => {
       const pageNum = parseInt(page, 10) || 0
       const totalOffset = pageNum * limitNum
       
-      gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
-      sliceStart = totalOffset % GAANA_PAGE_SIZE
+      gaanaPage = Math.floor(totalOffset / batchSize).toString()
+      sliceStart = totalOffset % batchSize
       sliceEnd = sliceStart + limitNum
     }
 
