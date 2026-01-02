@@ -1,15 +1,13 @@
 /**
  * @fileoverview Single-file Gaana API.
- * * Universal Root Endpoints:
- * 1. Link Handler: /?link={url}&page={0}&limit={10}&sorting={popularity}
- * 2. Search Handler: /?search={query}&page={0}&country={IN}&limit={10}
- * * * Specific Endpoints:
- * 1. Song Details: /api/songs
- * 2. Album Details: /api/albums
- * 3. Song Search: /api/search/songs
- * 4. Artist Song List: /api/artists/songs
- * 5. Artist Album List: /api/artists/albums
- * 6. Label Album List: /api/labels/albums
+ * * * * DIRECT ROOT MAPPINGS (Strict Priority):
+ * 1. Label Albums:  /?labels={seokey}
+ * 2. Artist Songs:  /?artistssongsid={id}
+ * 3. Artist Albums: /?artistsalbumsid={id}
+ * 4. Song Search:   /?search={query}
+ * 5. Universal Link:/?link={url} (Auto-detects Song/Album/Label)
+ * * * * * API ENDPOINTS (Legacy Support):
+ * /api/songs, /api/albums, /api/search/songs, /api/artists/songs, /api/artists/albums, /api/labels/albums
  */
 
 import { Hono } from 'hono'
@@ -39,55 +37,39 @@ const USER_AGENTS = [
 
 /**
  * Returns the correct batch size for a specific Gaana API type.
- * - musiclabelalbums: Gaana API returns 50 items per page.
- * - search/others: Gaana API returns 20 items per page.
+ * - Lists (Label/Artist): 50 items
+ * - Search: 20 items
  */
 function getBatchSize(type: string): number {
-  if (type === 'musiclabelalbums') {
+  if (['musiclabelalbums', 'artistTrackList', 'artistAlbumList'].includes(type)) {
     return 50
   }
   return 20
 }
 
-/**
- * Decrypts encrypted stream URLs using AES-128-CBC.
- */
 function decryptLink(encryptedData: string): string {
   try {
     if (!encryptedData || encryptedData.length < 20) return encryptedData
-
     const offset = parseInt(encryptedData[0], 10)
     if (isNaN(offset)) return encryptedData
-
     const ciphertextB64 = encryptedData.substring(offset + 16)
     const ciphertext = Buffer.from(ciphertextB64, 'base64')
-
     const decipher = crypto.createDecipheriv('aes-128-cbc', DEC_KEY, DEC_IV)
     decipher.setAutoPadding(false)
-
     let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
     let rawText = decrypted.toString('utf-8')
-
     rawText = rawText.replace(/[^\x20-\x7E]/g, '')
-
     if (rawText.includes('hls/')) {
       const pathStart = rawText.indexOf('hls/')
       const cleanPath = rawText.substring(pathStart)
       return `https://vodhlsgaana-ebw.akamaized.net/${cleanPath}`
     }
-    
     return rawText || encryptedData
-  } catch (e) {
-    return encryptedData
-  }
+  } catch (e) { return encryptedData }
 }
 
-/**
- * Recursively traverses the API response to find and decrypt "message" fields.
- */
 function traverseAndDecrypt(data: any): any {
   if (!data || typeof data !== 'object') return data
-
   if (data.urls && typeof data.urls === 'object' && !Array.isArray(data.urls)) {
     const qualities = ['auto', 'high', 'medium', 'low']
     for (const quality of qualities) {
@@ -96,7 +78,6 @@ function traverseAndDecrypt(data: any): any {
       }
     }
   }
-
   if (data.key === 'stream_url' && data.value && typeof data.value === 'object') {
     const qualities = ['auto', 'high', 'medium', 'low']
     for (const quality of qualities) {
@@ -105,7 +86,6 @@ function traverseAndDecrypt(data: any): any {
       }
     }
   }
-
   for (const key in data) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
       const value = data[key]
@@ -117,12 +97,8 @@ function traverseAndDecrypt(data: any): any {
   return data
 }
 
-/**
- * Applies slicing to Search Results (Structure: gr -> gd)
- */
 function applySlice(data: any, start: number, end: number | undefined): any {
   if (!data) return data
-  
   if (data.gr && Array.isArray(data.gr)) {
     for (const group of data.gr) {
       if (group.gd && Array.isArray(group.gd)) {
@@ -133,44 +109,50 @@ function applySlice(data: any, start: number, end: number | undefined): any {
   return data
 }
 
-/**
- * Applies slicing to Label/List Results (Structure: entities)
- */
 function applySliceToEntities(data: any, start: number, end: number | undefined): any {
   if (!data) return data
-  
   if (data.entities && Array.isArray(data.entities)) {
     data.entities = data.entities.slice(start, end)
   }
   return data
 }
 
-/**
- * Generic fetch function for Gaana API.
- */
 async function fetchGaana(queryParams: Record<string, string>) {
   const queryString = new URLSearchParams(queryParams).toString()
   const url = `${BASE_URL}?${queryString}`
-  
   const headers = {
     'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
     'Accept': 'application/json, text/plain, */*',
     'Origin': 'https://gaana.com',
     'Referer': 'https://gaana.com/'
   }
-
   const response = await fetch(url, { method: 'POST', headers })
   const json = await response.json()
   return json
 }
 
-/**
- * Helper to extract seokey from params or full URLs.
- */
+function extractIdFromUrl(url: string): string {
+  const parts = url.split('/').filter((p) => p.trim() !== '')
+  return parts.length > 0 ? parts[parts.length - 1] : ''
+}
+
+function getPagination(pageStr: string | undefined, limitStr: string | undefined, batchSize: number) {
+  const limit = parseInt(limitStr || '10', 10) || 10
+  const page = parseInt(pageStr || '0', 10) || 0
+  const totalOffset = page * limit
+  
+  // Calculate upstream page index
+  const gaanaPage = Math.floor(totalOffset / batchSize).toString()
+  // Calculate local slice
+  const sliceStart = totalOffset % batchSize
+  const sliceEnd = sliceStart + limit
+  
+  return { gaanaPage, sliceStart, sliceEnd }
+}
+
 function getSeokeyFromContext(c: any): string | null {
   const rawInput = c.req.query('seokey') || c.req.query('url')
   if (!rawInput) return null
-
   if (rawInput.includes('/')) {
      const parts = rawInput.split('/').filter((p: string) => p.trim() !== '')
      return parts.length > 0 ? parts[parts.length - 1] : null
@@ -178,268 +160,180 @@ function getSeokeyFromContext(c: any): string | null {
   return rawInput
 }
 
-/**
- * Helper to extract ID from a full Gaana URL string.
- */
-function extractIdFromUrl(url: string): string {
-  const parts = url.split('/').filter((p) => p.trim() !== '')
-  return parts.length > 0 ? parts[parts.length - 1] : ''
-}
-
 // ==========================================
 // 3. APP & ROUTES
 // ==========================================
 
 const app = new Hono()
-
 app.use('*', cors())
 
 /**
- * ROOT HANDLER:
- * 1. ?search={query} -> Search Songs (includes page, country, limit)
- * 2. ?link={url} -> Detect and Fetch Song/Album/Label (includes page, limit, sorting)
+ * ROOT HANDLER: Strictly Enforced Priority Order
  */
 app.get('/', async (c) => {
-  const link = c.req.query('link')
-  const search = c.req.query('search')
+  const q = c.req.query()
+  
+  // Common Params
+  const page = q.page || '0'
+  const limit = q.limit || '10'
+  const sorting = q.sorting || 'popularity'
+  const country = q.country || 'IN'
 
-  // --- 1. SEARCH HANDLER ---
-  if (search) {
-    try {
-      const page = c.req.query('page') || '0'
-      const country = c.req.query('country') || 'IN'
-      const limit = c.req.query('limit') || '10'
-
-      const batchSize = getBatchSize('search')
-      let gaanaPage = page
-      let sliceStart = 0
-      let sliceEnd = undefined
-
-      if (limit) {
-        const limitNum = parseInt(limit, 10)
-        const pageNum = parseInt(page, 10) || 0
-        const totalOffset = pageNum * limitNum
-        
-        gaanaPage = Math.floor(totalOffset / batchSize).toString()
-        sliceStart = totalOffset % batchSize
-        sliceEnd = sliceStart + limitNum
-      }
+  try {
+    // 1. Label Albums (?labels={seokey})
+    if (q.labels) {
+      const batchSize = getBatchSize('musiclabelalbums') // 50
+      const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
       
+      const rawData = await fetchGaana({
+        type: 'musiclabelalbums',
+        seokey: q.labels,
+        page: gaanaPage,
+        sorting: sorting
+      })
+      return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
+    }
+
+    // 2. Artist Songs (?artistssongsid={id})
+    if (q.artistssongsid) {
+      const batchSize = getBatchSize('artistTrackList') // 50
+      const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
+
+      const rawData = await fetchGaana({
+        type: 'artistTrackList',
+        id: q.artistssongsid,
+        order: '0',
+        page: gaanaPage,
+        sortBy: sorting
+      })
+      return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
+    }
+
+    // 3. Artist Albums (?artistsalbumsid={id})
+    if (q.artistsalbumsid) {
+      const batchSize = getBatchSize('artistAlbumList') // 50
+      const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
+
+      const rawData = await fetchGaana({
+        type: 'artistAlbumList',
+        id: q.artistsalbumsid,
+        order: '0',
+        page: gaanaPage,
+        sortBy: sorting
+      })
+      return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
+    }
+
+    // 4. Song Search (?search={query})
+    if (q.search) {
+      const batchSize = getBatchSize('search') // 20
+      const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
+
       const rawData = await fetchGaana({
         country: country,
         page: gaanaPage,
         secType: 'track',
         type: 'search',
-        keyword: search
+        keyword: q.search
       })
-      
-      const decrypted = traverseAndDecrypt(rawData)
-      const limitedData = applySlice(decrypted, sliceStart, sliceEnd)
-
-      return c.json(limitedData)
-    } catch (error) {
-      return c.json({ error: 'Internal Server Error' }, 500)
+      return c.json(applySlice(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
-  }
 
-  // --- 2. LINK HANDLER ---
-  if (link) {
-    try {
-      let seokey = extractIdFromUrl(link)
+    // 5. Universal Link (?link={url})
+    if (q.link) {
+      const seokey = extractIdFromUrl(q.link)
+      let fetchParams: any = { seokey }
+      let isList = false
+      let listType = ''
       
-      // Default Params
-      const page = c.req.query('page') || '0'
-      const limit = c.req.query('limit') || '10'
-      const sorting = c.req.query('sorting') || 'popularity'
-
-      let fetchParams: Record<string, string> = {
-        type: '',
-        seokey: seokey
-      }
-
-      // Pagination Controls
-      let sliceStart = 0
-      let sliceEnd = undefined
-      let applyEntitySlice = false
-
-      if (link.includes('/song/')) {
+      if (q.link.includes('/song/')) {
         fetchParams.type = 'songDetail'
-      } else if (link.includes('/album/')) {
+      } else if (q.link.includes('/album/')) {
         fetchParams.type = 'albumDetail'
-      } else if (link.includes('/music-label/')) {
-        // Label Logic with Smart Pagination
+      } else if (q.link.includes('/music-label/')) {
         fetchParams.type = 'musiclabelalbums'
         fetchParams.sorting = sorting
-        applyEntitySlice = true
-
-        const batchSize = getBatchSize('musiclabelalbums') // 50
-        const limitNum = parseInt(limit, 10)
-        const pageNum = parseInt(page, 10) || 0
-        const totalOffset = pageNum * limitNum
-        
-        const gaanaPage = Math.floor(totalOffset / batchSize).toString()
-        sliceStart = totalOffset % batchSize
-        sliceEnd = sliceStart + limitNum
-
-        fetchParams.page = gaanaPage
+        isList = true
+        listType = 'musiclabelalbums'
       } else {
-        return c.json({ error: 'Unsupported link type. Use Song, Album, or Label URL.' }, 400)
+        return c.json({ error: 'Unsupported link type. Only Song, Album, or Label URLs supported.' }, 400)
       }
 
-      const rawData = await fetchGaana(fetchParams)
-      const decrypted = traverseAndDecrypt(rawData)
-
-      // Apply slicing if it's an entity list (like Labels)
-      if (applyEntitySlice) {
-        return c.json(applySliceToEntities(decrypted, sliceStart, sliceEnd))
+      if (isList) {
+        const batchSize = getBatchSize(listType) // 50 for labels
+        const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
+        fetchParams.page = gaanaPage
+        
+        const rawData = await fetchGaana(fetchParams)
+        return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
+      } else {
+        const rawData = await fetchGaana(fetchParams)
+        return c.json(traverseAndDecrypt(rawData))
       }
-
-      return c.json(decrypted)
-    } catch (error) {
-      return c.json({ error: 'Internal Server Error' }, 500)
     }
+
+    // Documentation
+    return c.json({
+      service: 'Gaana API',
+      status: 'active',
+      usage: {
+        labels: '/?labels=amara-muzik-one&page=0&limit=10',
+        artist_songs: '/?artistssongsid=1242888&page=0&limit=10',
+        artist_albums: '/?artistsalbumsid=1&page=0&limit=10',
+        search: '/?search=Humane%20Sagar&limit=10',
+        link: '/?link=https://gaana.com/song/kudi-jach-gayi-14'
+      }
+    })
+
+  } catch (error) {
+    return c.json({ error: 'Internal Server Error' }, 500)
   }
-
-  // --- 3. DOCUMENTATION ---
-  return c.json({
-    service: 'Gaana API',
-    status: 'active',
-    usage: {
-      universal_search: '/?search=Humane%20Sagar&page=0',
-      universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
-      song_details: '/api/songs?seokey=kudi-jach-gayi-14',
-      album_details: '/api/albums?seokey=aau-ketedina-odia',
-      label_albums: '/api/labels/albums?seokey=rajshri-music&page=0&limit=10&sorting=popularity',
-      search: '/api/search/songs?keyword=Humane%20Sagar&page=0&limit=10',
-      artist_songs: '/api/artists/songs?id=1242888',
-      artist_albums: '/api/artists/albums?id=1'
-    }
-  })
 })
 
-// --- Specific API Endpoints ---
+// --- SPECIFIC API ROUTES (Standard wrappers for specific logic) ---
 
-// 1. Song Details
 app.get('/api/songs', async (c) => {
-  try {
-    const seokey = getSeokeyFromContext(c)
-    if (!seokey) return c.json({ error: 'seokey/url required' }, 400)
-    const rawData = await fetchGaana({ type: 'songDetail', seokey })
-    return c.json(traverseAndDecrypt(rawData))
-  } catch (error) { return c.json({ error: 'Error' }, 500) }
+  const seokey = getSeokeyFromContext(c)
+  if (!seokey) return c.json({ error: 'seokey required' }, 400)
+  return c.json(traverseAndDecrypt(await fetchGaana({ type: 'songDetail', seokey })))
 })
 
-// 2. Album Details
 app.get('/api/albums', async (c) => {
-  try {
-    const seokey = getSeokeyFromContext(c)
-    if (!seokey) return c.json({ error: 'seokey/url required' }, 400)
-    const rawData = await fetchGaana({ type: 'albumDetail', seokey })
-    return c.json(traverseAndDecrypt(rawData))
-  } catch (error) { return c.json({ error: 'Error' }, 500) }
+  const seokey = getSeokeyFromContext(c)
+  if (!seokey) return c.json({ error: 'seokey required' }, 400)
+  return c.json(traverseAndDecrypt(await fetchGaana({ type: 'albumDetail', seokey })))
 })
 
-// 3. Search (With Smart Pagination)
-app.get('/api/search/songs', async (c) => {
-  try {
-    const keyword = c.req.query('keyword')
-    const page = c.req.query('page') || '0'
-    const country = c.req.query('country') || 'IN'
-    const limit = c.req.query('limit') || '10'
-
-    if (!keyword) return c.json({ error: 'keyword required' }, 400)
-
-    const batchSize = getBatchSize('search')
-    let gaanaPage = page
-    let sliceStart = 0
-    let sliceEnd = undefined
-
-    if (limit) {
-      const limitNum = parseInt(limit, 10)
-      const pageNum = parseInt(page, 10) || 0
-      const totalOffset = pageNum * limitNum
-      
-      gaanaPage = Math.floor(totalOffset / batchSize).toString()
-      sliceStart = totalOffset % batchSize
-      sliceEnd = sliceStart + limitNum
-    }
-    
-    const rawData = await fetchGaana({
-      country: country,
-      page: gaanaPage,
-      secType: 'track',
-      type: 'search',
-      keyword: keyword
-    })
-
-    const decrypted = traverseAndDecrypt(rawData)
-    const limitedData = applySlice(decrypted, sliceStart, sliceEnd)
-    
-    return c.json(limitedData)
-  } catch (error) { return c.json({ error: 'Error' }, 500) }
-})
-
-// 4. Artist Songs
-app.get('/api/artists/songs', async (c) => {
-  try {
-    const id = c.req.query('id')
-    const page = c.req.query('page') || '0'
-    const sortBy = c.req.query('sortBy') || 'popularity'
-    if (!id) return c.json({ error: 'id required' }, 400)
-    const rawData = await fetchGaana({ type: 'artistTrackList', id, order: '0', page, sortBy })
-    return c.json(traverseAndDecrypt(rawData))
-  } catch (error) { return c.json({ error: 'Error' }, 500) }
-})
-
-// 5. Artist Albums
-app.get('/api/artists/albums', async (c) => {
-  try {
-    const id = c.req.query('id')
-    const page = c.req.query('page') || '0'
-    const sortBy = c.req.query('sortBy') || 'popularity'
-    if (!id) return c.json({ error: 'id required' }, 400)
-    const rawData = await fetchGaana({ type: 'artistAlbumList', id, order: '0', page, sortBy })
-    return c.json(traverseAndDecrypt(rawData))
-  } catch (error) { return c.json({ error: 'Error' }, 500) }
-})
-
-// 6. Label Albums (With Fixed Batch Size for Correct Pagination)
 app.get('/api/labels/albums', async (c) => {
-  try {
-    const seokey = getSeokeyFromContext(c)
-    const page = c.req.query('page') || '0'
-    const sorting = c.req.query('sorting') || 'popularity'
-    const limit = c.req.query('limit') || '10'
+  const seokey = getSeokeyFromContext(c)
+  if (!seokey) return c.json({ error: 'seokey required' }, 400)
+  const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 50)
+  const data = await fetchGaana({ type: 'musiclabelalbums', seokey, page: gaanaPage, sorting: c.req.query('sorting')||'popularity' })
+  return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
+})
 
-    if (!seokey) return c.json({ error: 'seokey/url required' }, 400)
+app.get('/api/search/songs', async (c) => {
+  const keyword = c.req.query('keyword')
+  if (!keyword) return c.json({ error: 'keyword required' }, 400)
+  const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 20)
+  const data = await fetchGaana({ country: c.req.query('country')||'IN', page: gaanaPage, secType: 'track', type: 'search', keyword })
+  return c.json(applySlice(traverseAndDecrypt(data), sliceStart, sliceEnd))
+})
 
-    const batchSize = getBatchSize('musiclabelalbums') // 50
-    let gaanaPage = page
-    let sliceStart = 0
-    let sliceEnd = undefined
+app.get('/api/artists/songs', async (c) => {
+  const id = c.req.query('id')
+  if (!id) return c.json({ error: 'id required' }, 400)
+  const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 50)
+  const data = await fetchGaana({ type: 'artistTrackList', id, order: '0', page: gaanaPage, sortBy: c.req.query('sortBy')||'popularity' })
+  return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
+})
 
-    if (limit) {
-      const limitNum = parseInt(limit, 10)
-      const pageNum = parseInt(page, 10) || 0
-      const totalOffset = pageNum * limitNum
-      
-      gaanaPage = Math.floor(totalOffset / batchSize).toString()
-      sliceStart = totalOffset % batchSize
-      sliceEnd = sliceStart + limitNum
-    }
-
-    const rawData = await fetchGaana({ 
-      type: 'musiclabelalbums', 
-      seokey, 
-      page: gaanaPage, 
-      sorting 
-    })
-    
-    const decrypted = traverseAndDecrypt(rawData)
-    const limitedData = applySliceToEntities(decrypted, sliceStart, sliceEnd)
-    
-    return c.json(limitedData)
-  } catch (error) { return c.json({ error: 'Error' }, 500) }
+app.get('/api/artists/albums', async (c) => {
+  const id = c.req.query('id')
+  if (!id) return c.json({ error: 'id required' }, 400)
+  const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 50)
+  const data = await fetchGaana({ type: 'artistAlbumList', id, order: '0', page: gaanaPage, sortBy: c.req.query('sortBy')||'popularity' })
+  return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
 })
 
 export default app
