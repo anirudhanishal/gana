@@ -1,11 +1,14 @@
 /**
- * @fileoverview Single-file Gaana API (Songs & Albums).
+ * @fileoverview Single-file Gaana API (Songs, Albums, & Search).
  * * 1. Song Details
- * - API: https://gaana.com/apiv2?seokey={seokey}&type=songDetail
  * - Route: /api/songs?seokey={seokey}
+ * - Source: type=songDetail
  * * 2. Album Details
- * - API: https://gaana.com/apiv2?seokey={seokey}&type=albumDetail
  * - Route: /api/albums?seokey={seokey}
+ * - Source: type=albumDetail
+ * * 3. Song Search List
+ * - Route: /api/search/songs?keyword={query}&page={0}
+ * - Source: type=search&secType=track
  */
 
 import { Hono } from 'hono'
@@ -97,9 +100,10 @@ function traverseAndDecrypt(data: any): any {
 /**
  * Generic fetcher for Gaana API.
  */
-async function fetchGaanaData(seokey: string, type: 'songDetail' | 'albumDetail') {
-  // Construct URL exactly as requested
-  const url = `${BASE_URL}?seokey=${seokey}&type=${type}`
+async function fetchGaana(queryParams: Record<string, string>) {
+  // Build query string
+  const queryString = new URLSearchParams(queryParams).toString()
+  const url = `${BASE_URL}?${queryString}`
   
   const headers = {
     'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
@@ -147,9 +151,12 @@ app.get('/api/songs', async (c) => {
     const seokey = getSeokeyFromContext(c)
     if (!seokey) return c.json({ error: 'Parameter "seokey" is required' }, 400)
 
-    const rawData = await fetchGaanaData(seokey, 'songDetail')
+    const rawData = await fetchGaana({
+      type: 'songDetail',
+      seokey: seokey
+    })
+    
     const decryptedData = traverseAndDecrypt(rawData)
-
     return c.json(decryptedData)
   } catch (error) {
     return c.json({ error: 'Internal Server Error' }, 500)
@@ -165,9 +172,41 @@ app.get('/api/albums', async (c) => {
     const seokey = getSeokeyFromContext(c)
     if (!seokey) return c.json({ error: 'Parameter "seokey" is required' }, 400)
 
-    const rawData = await fetchGaanaData(seokey, 'albumDetail')
+    const rawData = await fetchGaana({
+      type: 'albumDetail',
+      seokey: seokey
+    })
+    
     const decryptedData = traverseAndDecrypt(rawData)
+    return c.json(decryptedData)
+  } catch (error) {
+    return c.json({ error: 'Internal Server Error' }, 500)
+  }
+})
 
+/**
+ * 3. Song Search List Route
+ * Endpoint: /api/search/songs?keyword=...&page=0
+ */
+app.get('/api/search/songs', async (c) => {
+  try {
+    const keyword = c.req.query('keyword')
+    // Changed default page from '1' to '0'
+    const page = c.req.query('page') || '0'
+    const country = c.req.query('country') || 'IN'
+    
+    if (!keyword) return c.json({ error: 'Parameter "keyword" is required' }, 400)
+
+    // Params: country=IN&keyword=...&page=...&secType=track&type=search
+    const rawData = await fetchGaana({
+      type: 'search',
+      secType: 'track',
+      country: country,
+      keyword: keyword,
+      page: page
+    })
+
+    const decryptedData = traverseAndDecrypt(rawData)
     return c.json(decryptedData)
   } catch (error) {
     return c.json({ error: 'Internal Server Error' }, 500)
@@ -179,11 +218,12 @@ app.get('/api/albums', async (c) => {
  */
 app.get('/', (c) => {
   return c.json({
-    service: 'Gaana API (Songs & Albums)',
+    service: 'Gaana API',
     status: 'active',
     endpoints: {
-      song: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho',
-      album: '/api/albums?seokey=hum-dil-de-chuke-sanam'
+      song_details: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho',
+      album_details: '/api/albums?seokey=hum-dil-de-chuke-sanam',
+      song_search: '/api/search/songs?keyword=Humane%20Sagar&page=0'
     }
   })
 })
