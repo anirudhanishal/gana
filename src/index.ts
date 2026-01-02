@@ -35,12 +35,8 @@ const USER_AGENTS = [
 // 2. HELPER FUNCTIONS
 // ==========================================
 
-/**
- * Returns the correct batch size for a specific Gaana API type.
- * - Lists (Label/Artist): 50 items
- * - Search: 20 items
- */
 function getBatchSize(type: string): number {
+  // Lists usually return 50, Search usually 20
   if (['musiclabelalbums', 'artistTrackList', 'artistAlbumList'].includes(type)) {
     return 50
   }
@@ -131,6 +127,16 @@ async function fetchGaana(queryParams: Record<string, string>) {
   return json
 }
 
+function getSeokeyFromContext(c: any): string | null {
+  const rawInput = c.req.query('seokey') || c.req.query('url')
+  if (!rawInput) return null
+  if (rawInput.includes('/')) {
+     const parts = rawInput.split('/').filter((p: string) => p.trim() !== '')
+     return parts.length > 0 ? parts[parts.length - 1] : null
+  }
+  return rawInput
+}
+
 function extractIdFromUrl(url: string): string {
   const parts = url.split('/').filter((p) => p.trim() !== '')
   return parts.length > 0 ? parts[parts.length - 1] : ''
@@ -141,23 +147,11 @@ function getPagination(pageStr: string | undefined, limitStr: string | undefined
   const page = parseInt(pageStr || '0', 10) || 0
   const totalOffset = page * limit
   
-  // Calculate upstream page index
   const gaanaPage = Math.floor(totalOffset / batchSize).toString()
-  // Calculate local slice
   const sliceStart = totalOffset % batchSize
   const sliceEnd = sliceStart + limit
   
   return { gaanaPage, sliceStart, sliceEnd }
-}
-
-function getSeokeyFromContext(c: any): string | null {
-  const rawInput = c.req.query('seokey') || c.req.query('url')
-  if (!rawInput) return null
-  if (rawInput.includes('/')) {
-     const parts = rawInput.split('/').filter((p: string) => p.trim() !== '')
-     return parts.length > 0 ? parts[parts.length - 1] : null
-  }
-  return rawInput
 }
 
 // ==========================================
