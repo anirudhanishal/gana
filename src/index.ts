@@ -1,14 +1,11 @@
 /**
- * @fileoverview Single-file Gaana API (Songs, Albums, & Search).
- * * 1. Song Details
- * - Route: /api/songs?seokey={seokey}
- * - Source: type=songDetail
- * * 2. Album Details
- * - Route: /api/albums?seokey={seokey}
- * - Source: type=albumDetail
- * * 3. Song Search List
- * - Route: /api/search/songs?keyword={query}&page={0}
- * - Source: type=search&secType=track
+ * @fileoverview Single-file Gaana API (Songs, Albums, Search & Artist Tracks).
+ * Provides endpoints to fetch and decrypt data directly from Gaana's API.
+ * * Endpoints:
+ * 1. Song Details: /api/songs
+ * 2. Album Details: /api/albums
+ * 3. Song Search: /api/search/songs
+ * 4. Artist Song List: /api/artists/songs
  */
 
 import { Hono } from 'hono'
@@ -27,7 +24,9 @@ const DEC_KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
 // ==========================================
@@ -35,28 +34,33 @@ const USER_AGENTS = [
 // ==========================================
 
 /**
- * Decrypts encrypted stream URLs.
+ * Decrypts encrypted stream URLs using AES-128-CBC.
+ * Handles the custom Gaana encryption format including offset handling.
  */
 function decryptLink(encryptedData: string): string {
   try {
     if (!encryptedData || encryptedData.length < 20) return encryptedData
 
+    // Extract offset from the first character
     const offset = parseInt(encryptedData[0], 10)
     if (isNaN(offset)) return encryptedData
 
+    // Slice the string to get the actual ciphertext (skipping offset + IV space)
     const ciphertextB64 = encryptedData.substring(offset + 16)
     const ciphertext = Buffer.from(ciphertextB64, 'base64')
 
+    // Initialize decipher
     const decipher = crypto.createDecipheriv('aes-128-cbc', DEC_KEY, DEC_IV)
     decipher.setAutoPadding(false)
 
+    // Decrypt
     let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
     let rawText = decrypted.toString('utf-8')
 
-    // Clean up
+    // Remove non-printable characters (padding cleanup)
     rawText = rawText.replace(/[^\x20-\x7E]/g, '')
 
-    // Fix HLS paths
+    // Fix HLS paths to point to the correct Akamai CDN
     if (rawText.includes('hls/')) {
       const pathStart = rawText.indexOf('hls/')
       const cleanPath = rawText.substring(pathStart)
@@ -65,17 +69,19 @@ function decryptLink(encryptedData: string): string {
     
     return rawText || encryptedData
   } catch (e) {
+    // Return original data if decryption fails to avoid breaking the response
     return encryptedData
   }
 }
 
 /**
- * Recursively finds and decrypts "message" fields inside "urls" objects.
+ * Recursively traverses the API response to find and decrypt "message" fields.
+ * specifically looking for the "urls" object structure used by Gaana.
  */
 function traverseAndDecrypt(data: any): any {
   if (!data || typeof data !== 'object') return data
 
-  // Check specific "urls" structure
+  // Check for the specific "urls" object structure
   if (data.urls && typeof data.urls === 'object' && !Array.isArray(data.urls)) {
     const qualities = ['auto', 'high', 'medium', 'low']
     for (const quality of qualities) {
@@ -85,7 +91,7 @@ function traverseAndDecrypt(data: any): any {
     }
   }
 
-  // Traverse children
+  // Recursively traverse all children
   for (const key in data) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
       const value = data[key]
@@ -98,10 +104,10 @@ function traverseAndDecrypt(data: any): any {
 }
 
 /**
- * Generic fetcher for Gaana API.
+ * Generic fetch function to make requests to Gaana API.
+ * Uses rotating User-Agents and standard headers.
  */
 async function fetchGaana(queryParams: Record<string, string>) {
-  // Build query string
   const queryString = new URLSearchParams(queryParams).toString()
   const url = `${BASE_URL}?${queryString}`
   
@@ -118,7 +124,7 @@ async function fetchGaana(queryParams: Record<string, string>) {
 }
 
 /**
- * Helper to extract seokey from params
+ * Helper to extract seokey from query parameters or URL string.
  */
 function getSeokeyFromContext(c: any): string | null {
   const seokey = c.req.query('seokey')
@@ -126,7 +132,6 @@ function getSeokeyFromContext(c: any): string | null {
   
   if (seokey) return seokey
   
-  // Fallback extraction if user passes full url
   if (urlParam) {
      const parts = urlParam.split('/').filter(Boolean)
      return parts[parts.length - 1]
@@ -140,16 +145,21 @@ function getSeokeyFromContext(c: any): string | null {
 
 const app = new Hono()
 
+// Global Middleware
 app.use('*', cors())
 
 /**
- * 1. Song Details Route
- * Endpoint: /api/songs?seokey=...
+ * Route: Song Details
+ * Method: GET
+ * Endpoint: /api/songs
+ * Params: seokey (required)
  */
 app.get('/api/songs', async (c) => {
   try {
     const seokey = getSeokeyFromContext(c)
-    if (!seokey) return c.json({ error: 'Parameter "seokey" is required' }, 400)
+    if (!seokey) {
+      return c.json({ error: 'Parameter "seokey" is required' }, 400)
+    }
 
     const rawData = await fetchGaana({
       type: 'songDetail',
@@ -164,13 +174,17 @@ app.get('/api/songs', async (c) => {
 })
 
 /**
- * 2. Album Details Route
- * Endpoint: /api/albums?seokey=...
+ * Route: Album Details
+ * Method: GET
+ * Endpoint: /api/albums
+ * Params: seokey (required)
  */
 app.get('/api/albums', async (c) => {
   try {
     const seokey = getSeokeyFromContext(c)
-    if (!seokey) return c.json({ error: 'Parameter "seokey" is required' }, 400)
+    if (!seokey) {
+      return c.json({ error: 'Parameter "seokey" is required' }, 400)
+    }
 
     const rawData = await fetchGaana({
       type: 'albumDetail',
@@ -185,19 +199,21 @@ app.get('/api/albums', async (c) => {
 })
 
 /**
- * 3. Song Search List Route
- * Endpoint: /api/search/songs?keyword=...&page=0
+ * Route: Song Search List
+ * Method: GET
+ * Endpoint: /api/search/songs
+ * Params: keyword (required), page (optional, default 0), country (optional, default IN)
  */
 app.get('/api/search/songs', async (c) => {
   try {
     const keyword = c.req.query('keyword')
-    // Changed default page from '1' to '0'
     const page = c.req.query('page') || '0'
     const country = c.req.query('country') || 'IN'
     
-    if (!keyword) return c.json({ error: 'Parameter "keyword" is required' }, 400)
+    if (!keyword) {
+      return c.json({ error: 'Parameter "keyword" is required' }, 400)
+    }
 
-    // Params: country=IN&keyword=...&page=...&secType=track&type=search
     const rawData = await fetchGaana({
       type: 'search',
       secType: 'track',
@@ -214,16 +230,54 @@ app.get('/api/search/songs', async (c) => {
 })
 
 /**
- * Root Route (Documentation)
+ * Route: Artist Song List
+ * Method: GET
+ * Endpoint: /api/artists/songs
+ * Params: id (required), page (optional, default 0), sortBy (optional, default popularity)
+ */
+app.get('/api/artists/songs', async (c) => {
+  try {
+    const id = c.req.query('id')
+    const page = c.req.query('page') || '0'
+    const sortBy = c.req.query('sortBy') || 'popularity'
+    const language = c.req.query('language') || ''
+    const order = '0'
+
+    if (!id) {
+      return c.json({ error: 'Parameter "id" is required' }, 400)
+    }
+
+    const rawData = await fetchGaana({
+      type: 'artistTrackList',
+      id: id,
+      language: language,
+      order: order,
+      page: page,
+      sortBy: sortBy
+    })
+
+    const decryptedData = traverseAndDecrypt(rawData)
+    return c.json(decryptedData)
+  } catch (error) {
+    return c.json({ error: 'Internal Server Error' }, 500)
+  }
+})
+
+/**
+ * Route: Root Documentation
+ * Method: GET
+ * Endpoint: /
  */
 app.get('/', (c) => {
   return c.json({
     service: 'Gaana API',
     status: 'active',
+    version: '1.0.0',
     endpoints: {
       song_details: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho',
       album_details: '/api/albums?seokey=hum-dil-de-chuke-sanam',
-      song_search: '/api/search/songs?keyword=Humane%20Sagar&page=0'
+      song_search: '/api/search/songs?keyword=Humane%20Sagar&page=0',
+      artist_songs: '/api/artists/songs?id=1242888&page=0&sortBy=popularity'
     }
   })
 })
