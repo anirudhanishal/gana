@@ -169,13 +169,13 @@ app.get('/', async (c) => {
       const page = c.req.query('page') || '0'
       const country = c.req.query('country') || 'IN'
       
-      // Matching URL: ?country=IN&keyword=...&page=0&secType=track&type=search
+      // Strict Order: country -> page -> secType -> type -> keyword
       const rawData = await fetchGaana({
         country: country,
-        keyword: search,
         page: page,
         secType: 'track',
-        type: 'search'
+        type: 'search',
+        keyword: search
       })
       
       return c.json(traverseAndDecrypt(rawData))
@@ -261,13 +261,13 @@ app.get('/api/search/songs', async (c) => {
     const country = c.req.query('country') || 'IN'
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
     
-    // Matching URL: ?country=IN&keyword=...&page=0&secType=track&type=search
+    // Strict Order: country -> page -> secType -> type -> keyword
     const rawData = await fetchGaana({
       country: country,
-      keyword: keyword,
       page: page,
       secType: 'track',
-      type: 'search'
+      type: 'search',
+      keyword: keyword
     })
     return c.json(traverseAndDecrypt(rawData))
   } catch (error) { return c.json({ error: 'Error' }, 500) }
