@@ -2,7 +2,7 @@
  * @fileoverview Single-file Gaana API.
  * * Universal Root Endpoints:
  * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
- * 2. Search Handler: /?search={query}&page={0}&country={IN}
+ * 2. Search Handler: /?search={query}&page={0}&country={IN}&limit={10}
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
  * 2. Album Details: /api/albums
@@ -106,6 +106,29 @@ function traverseAndDecrypt(data: any): any {
 }
 
 /**
+ * Limits the number of results in the search response.
+ * Handles Gaana Search structure: { gr: [ { gd: [ ...tracks... ] } ] }
+ */
+function limitResults(data: any, limit: string | number | undefined): any {
+  if (!data || !limit) return data
+  
+  const limitNum = parseInt(String(limit), 10)
+  if (isNaN(limitNum) || limitNum <= 0) return data
+
+  // Check for Search Response Structure "gr" -> "gd"
+  if (data.gr && Array.isArray(data.gr)) {
+    for (const group of data.gr) {
+      if (group.gd && Array.isArray(group.gd)) {
+        // Slice the array to the requested limit
+        group.gd = group.gd.slice(0, limitNum)
+      }
+    }
+  }
+  
+  return data
+}
+
+/**
  * Generic fetch function for Gaana API.
  */
 async function fetchGaana(queryParams: Record<string, string>) {
@@ -156,20 +179,20 @@ app.use('*', cors())
 
 /**
  * ROOT HANDLER:
- * 1. ?search={query} -> Search Songs (includes page, country)
+ * 1. ?search={query} -> Search Songs (includes page, country, limit)
  * 2. ?link={url} -> Detect and Fetch Song/Album/Label
  */
 app.get('/', async (c) => {
   const link = c.req.query('link')
   const search = c.req.query('search')
 
-  // --- 1. SEARCH HANDLER (Fixed Parameters Order) ---
+  // --- 1. SEARCH HANDLER ---
   if (search) {
     try {
       const page = c.req.query('page') || '0'
       const country = c.req.query('country') || 'IN'
+      const limit = c.req.query('limit') // New Limit Parameter
       
-      // Strict Order: country -> page -> secType -> type -> keyword
       const rawData = await fetchGaana({
         country: country,
         page: page,
@@ -178,7 +201,8 @@ app.get('/', async (c) => {
         keyword: search
       })
       
-      return c.json(traverseAndDecrypt(rawData))
+      const limitedData = limitResults(rawData, limit)
+      return c.json(traverseAndDecrypt(limitedData))
     } catch (error) {
       return c.json({ error: 'Internal Server Error' }, 500)
     }
@@ -219,12 +243,12 @@ app.get('/', async (c) => {
     service: 'Gaana API',
     status: 'active',
     usage: {
-      universal_search: '/?search=Humane%20Sagar&page=0&country=IN',
+      universal_search: '/?search=Humane%20Sagar&limit=5',
       universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
       song_details: '/api/songs?seokey=kudi-jach-gayi-14',
       album_details: '/api/albums?seokey=aau-ketedina-odia',
       label_albums: '/api/labels/albums?seokey=rajshri-music',
-      search: '/api/search/songs?keyword=Humane%20Sagar&page=0&country=IN',
+      search: '/api/search/songs?keyword=Humane%20Sagar&limit=3',
       artist_songs: '/api/artists/songs?id=1242888',
       artist_albums: '/api/artists/albums?id=1'
     }
@@ -253,15 +277,16 @@ app.get('/api/albums', async (c) => {
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
-// 3. Search (Fixed Parameters Order)
+// 3. Search (With Limit Support)
 app.get('/api/search/songs', async (c) => {
   try {
     const keyword = c.req.query('keyword')
     const page = c.req.query('page') || '0'
     const country = c.req.query('country') || 'IN'
+    const limit = c.req.query('limit') // New Limit Parameter
+
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
     
-    // Strict Order: country -> page -> secType -> type -> keyword
     const rawData = await fetchGaana({
       country: country,
       page: page,
@@ -269,7 +294,9 @@ app.get('/api/search/songs', async (c) => {
       type: 'search',
       keyword: keyword
     })
-    return c.json(traverseAndDecrypt(rawData))
+
+    const limitedData = limitResults(rawData, limit)
+    return c.json(traverseAndDecrypt(limitedData))
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
