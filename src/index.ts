@@ -2,7 +2,7 @@
  * @fileoverview Single-file Gaana API.
  * * Universal Root Endpoints:
  * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
- * 2. Search Handler: /?search={query}&page={0}&country={IN}
+ * 2. Search Handler: /?search={query}&page={0}&country={IN}&limit={10}
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
  * 2. Album Details: /api/albums
@@ -188,13 +188,14 @@ app.get('/', async (c) => {
     try {
       const page = c.req.query('page') || '0'
       const country = c.req.query('country') || 'IN'
-      const limit = c.req.query('limit')
+      // Default limit is 10 if not specified
+      const limit = c.req.query('limit') || '10'
 
       let gaanaPage = page
       let sliceStart = 0
       let sliceEnd = undefined
 
-      // Smart Pagination Logic
+      // Smart Pagination Logic (Always runs since limit defaults to 10)
       if (limit) {
         const limitNum = parseInt(limit, 10)
         const pageNum = parseInt(page, 10) || 0
@@ -260,12 +261,12 @@ app.get('/', async (c) => {
     service: 'Gaana API',
     status: 'active',
     usage: {
-      universal_search: '/?search=Humane%20Sagar&page=9&limit=2',
+      universal_search: '/?search=Humane%20Sagar&page=0',
       universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
       song_details: '/api/songs?seokey=kudi-jach-gayi-14',
       album_details: '/api/albums?seokey=aau-ketedina-odia',
       label_albums: '/api/labels/albums?seokey=rajshri-music',
-      search: '/api/search/songs?keyword=Humane%20Sagar&page=9&limit=2',
+      search: '/api/search/songs?keyword=Humane%20Sagar&page=0&limit=10',
       artist_songs: '/api/artists/songs?id=1242888',
       artist_albums: '/api/artists/albums?id=1'
     }
@@ -300,7 +301,8 @@ app.get('/api/search/songs', async (c) => {
     const keyword = c.req.query('keyword')
     const page = c.req.query('page') || '0'
     const country = c.req.query('country') || 'IN'
-    const limit = c.req.query('limit')
+    // Default limit is 10 if not specified
+    const limit = c.req.query('limit') || '10'
 
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
 
