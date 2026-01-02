@@ -1,8 +1,9 @@
 /**
  * @fileoverview Single-file Gaana API (Song Details Only).
  * * Requirement:
- * - API URL: https://gaana.com/apiv2?type=songDetail&seokey=...
- * - Live URL: /api/songs?seokey=...
+ * - API URL: https://gaana.com/apiv2?seokey={seokey}&type=songDetail
+ * - Live URL: /api/songs?seokey={seokey}
+ * - Output: Complete original data (decrypted), not just the first track.
  */
 
 import { Hono } from 'hono'
@@ -13,9 +14,7 @@ import * as crypto from 'crypto'
 // 1. CONFIGURATION & CONSTANTS
 // ==========================================
 
-const GAANA_API_URL = 'https://gaana.com/apiv2?type=songDetail&seokey='
-
-// AES-128-CBC Keys for Decryption
+// AES-128-CBC Keys for Decryption (Standard Gaana Keys)
 const DEC_IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
 const DEC_KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
 
@@ -66,6 +65,7 @@ function decryptLink(encryptedData: string): string {
 
 /**
  * Recursively finds and decrypts "message" fields inside "urls" objects.
+ * This ensures the entire object structure is preserved, just with readable URLs.
  */
 function traverseAndDecrypt(data: any): any {
   if (!data || typeof data !== 'object') return data
@@ -80,7 +80,7 @@ function traverseAndDecrypt(data: any): any {
     }
   }
 
-  // Traverse children
+  // Traverse children (Arrays and Objects)
   for (const key in data) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
       const value = data[key]
@@ -94,9 +94,12 @@ function traverseAndDecrypt(data: any): any {
 
 /**
  * Fetches data from Gaana with browser-like headers.
+ * URL Pattern: https://gaana.com/apiv2?seokey={seokey}&type=songDetail
  */
 async function fetchSongDetails(seokey: string) {
-  const url = `${GAANA_API_URL}${seokey}`
+  // Construct URL exactly as requested
+  const url = `https://gaana.com/apiv2?seokey=${seokey}&type=songDetail`
+  
   const headers = {
     'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
     'Accept': 'application/json, text/plain, */*',
@@ -128,9 +131,10 @@ app.get('/api/songs', async (c) => {
     const seokey = c.req.query('seokey')
     const urlParam = c.req.query('url')
     
-    // Allow 'url' param too, but extract seokey from it if present
+    // Support generic 'url' param fallback logic if seokey missing
     let finalSeokey = seokey
     if (!finalSeokey && urlParam) {
+       // Simple extraction if user passes full gaana url
        const parts = urlParam.split('/').filter(Boolean)
        finalSeokey = parts[parts.length - 1]
     }
@@ -139,19 +143,15 @@ app.get('/api/songs', async (c) => {
       return c.json({ error: 'Parameter "seokey" is required' }, 400)
     }
 
-    // 2. Fetch from Gaana
-    const rawData = await fetchSongDetails(finalSeokey) as any
+    // 2. Fetch from Gaana (Complete Object)
+    const rawData = await fetchSongDetails(finalSeokey)
 
-    // 3. Validation
-    if (!rawData || !rawData.tracks || !Array.isArray(rawData.tracks) || rawData.tracks.length === 0) {
-      return c.json({ error: 'Song not found or invalid seokey' }, 404)
-    }
+    // 3. Decrypt Everything (Preserving structure)
+    // We pass the entire rawData object, not rawData.tracks[0]
+    const decryptedData = traverseAndDecrypt(rawData)
 
-    // 4. Decrypt URLs
-    const songData = traverseAndDecrypt(rawData.tracks[0])
-
-    // 5. Return
-    return c.json(songData)
+    // 4. Return Complete Original Data
+    return c.json(decryptedData)
     
   } catch (error) {
     console.error(error)
