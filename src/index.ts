@@ -2,7 +2,7 @@
  * @fileoverview Single-file Gaana API.
  * * Universal Root Endpoints:
  * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
- * 2. Search Handler: /?search={query}&page={0}&country={IN}&limit={10}
+ * 2. Search Handler: /?search={query}&page={0}&country={IN}
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
  * 2. Album Details: /api/albums
@@ -21,6 +21,7 @@ import * as crypto from 'crypto'
 // ==========================================
 
 const BASE_URL = 'https://gaana.com/apiv2'
+const GAANA_PAGE_SIZE = 20 // Standard batch size from Gaana
 
 // AES-128-CBC Keys for Decryption
 const DEC_IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
@@ -106,21 +107,17 @@ function traverseAndDecrypt(data: any): any {
 }
 
 /**
- * Limits the number of results in the search response.
- * Handles Gaana Search structure: { gr: [ { gd: [ ...tracks... ] } ] }
+ * Applies slicing to the search results array inside the Gaana response structure.
+ * Structure: { gr: [ { gd: [ ...tracks... ] } ] }
  */
-function limitResults(data: any, limit: string | number | undefined): any {
-  if (!data || !limit) return data
+function applySlice(data: any, start: number, end: number | undefined): any {
+  if (!data) return data
   
-  const limitNum = parseInt(String(limit), 10)
-  if (isNaN(limitNum) || limitNum <= 0) return data
-
-  // Check for Search Response Structure "gr" -> "gd"
   if (data.gr && Array.isArray(data.gr)) {
     for (const group of data.gr) {
       if (group.gd && Array.isArray(group.gd)) {
-        // Slice the array to the requested limit
-        group.gd = group.gd.slice(0, limitNum)
+        // Apply the local slice
+        group.gd = group.gd.slice(start, end)
       }
     }
   }
@@ -191,18 +188,38 @@ app.get('/', async (c) => {
     try {
       const page = c.req.query('page') || '0'
       const country = c.req.query('country') || 'IN'
-      const limit = c.req.query('limit') // New Limit Parameter
+      const limit = c.req.query('limit')
+
+      let gaanaPage = page
+      let sliceStart = 0
+      let sliceEnd = undefined
+
+      // Smart Pagination Logic
+      if (limit) {
+        const limitNum = parseInt(limit, 10)
+        const pageNum = parseInt(page, 10) || 0
+        const totalOffset = pageNum * limitNum
+        
+        // Calculate the actual page index for Gaana
+        gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
+        
+        // Calculate local slice indices
+        sliceStart = totalOffset % GAANA_PAGE_SIZE
+        sliceEnd = sliceStart + limitNum
+      }
       
       const rawData = await fetchGaana({
         country: country,
-        page: page,
+        page: gaanaPage,
         secType: 'track',
         type: 'search',
         keyword: search
       })
       
-      const limitedData = limitResults(rawData, limit)
-      return c.json(traverseAndDecrypt(limitedData))
+      const decrypted = traverseAndDecrypt(rawData)
+      const limitedData = applySlice(decrypted, sliceStart, sliceEnd)
+
+      return c.json(limitedData)
     } catch (error) {
       return c.json({ error: 'Internal Server Error' }, 500)
     }
@@ -243,12 +260,12 @@ app.get('/', async (c) => {
     service: 'Gaana API',
     status: 'active',
     usage: {
-      universal_search: '/?search=Humane%20Sagar&limit=5',
+      universal_search: '/?search=Humane%20Sagar&page=9&limit=2',
       universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
       song_details: '/api/songs?seokey=kudi-jach-gayi-14',
       album_details: '/api/albums?seokey=aau-ketedina-odia',
       label_albums: '/api/labels/albums?seokey=rajshri-music',
-      search: '/api/search/songs?keyword=Humane%20Sagar&limit=3',
+      search: '/api/search/songs?keyword=Humane%20Sagar&page=9&limit=2',
       artist_songs: '/api/artists/songs?id=1242888',
       artist_albums: '/api/artists/albums?id=1'
     }
@@ -277,26 +294,46 @@ app.get('/api/albums', async (c) => {
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
-// 3. Search (With Limit Support)
+// 3. Search (With Smart Pagination)
 app.get('/api/search/songs', async (c) => {
   try {
     const keyword = c.req.query('keyword')
     const page = c.req.query('page') || '0'
     const country = c.req.query('country') || 'IN'
-    const limit = c.req.query('limit') // New Limit Parameter
+    const limit = c.req.query('limit')
 
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
+
+    let gaanaPage = page
+    let sliceStart = 0
+    let sliceEnd = undefined
+
+    if (limit) {
+      const limitNum = parseInt(limit, 10)
+      const pageNum = parseInt(page, 10) || 0
+      const totalOffset = pageNum * limitNum
+      
+      // Calculate Gaana API page (assuming 20 items per page)
+      gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
+      
+      // Calculate local slice
+      sliceStart = totalOffset % GAANA_PAGE_SIZE
+      sliceEnd = sliceStart + limitNum
+    }
     
+    // Strict Order: country -> page -> secType -> type -> keyword
     const rawData = await fetchGaana({
       country: country,
-      page: page,
+      page: gaanaPage,
       secType: 'track',
       type: 'search',
       keyword: keyword
     })
 
-    const limitedData = limitResults(rawData, limit)
-    return c.json(traverseAndDecrypt(limitedData))
+    const decrypted = traverseAndDecrypt(rawData)
+    const limitedData = applySlice(decrypted, sliceStart, sliceEnd)
+    
+    return c.json(limitedData)
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
