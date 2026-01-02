@@ -2,7 +2,7 @@
  * @fileoverview Single-file Gaana API.
  * * Universal Root Endpoints:
  * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
- * 2. Search Handler: /?search={query}&page={0}&country={IN} (Song Search with params)
+ * 2. Search Handler: /?search={query}&page={0}&country={IN}
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
  * 2. Album Details: /api/albums
@@ -163,18 +163,19 @@ app.get('/', async (c) => {
   const link = c.req.query('link')
   const search = c.req.query('search')
 
-  // --- 1. SEARCH HANDLER (Full Parameters) ---
+  // --- 1. SEARCH HANDLER (Fixed Parameters Order) ---
   if (search) {
     try {
       const page = c.req.query('page') || '0'
       const country = c.req.query('country') || 'IN'
       
+      // Matching URL: ?country=IN&keyword=...&page=0&secType=track&type=search
       const rawData = await fetchGaana({
-        type: 'search',
-        secType: 'track',
         country: country,
         keyword: search,
-        page: page
+        page: page,
+        secType: 'track',
+        type: 'search'
       })
       
       return c.json(traverseAndDecrypt(rawData))
@@ -252,14 +253,22 @@ app.get('/api/albums', async (c) => {
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
-// 3. Search
+// 3. Search (Fixed Parameters Order)
 app.get('/api/search/songs', async (c) => {
   try {
     const keyword = c.req.query('keyword')
     const page = c.req.query('page') || '0'
     const country = c.req.query('country') || 'IN'
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
-    const rawData = await fetchGaana({ type: 'search', secType: 'track', country, keyword, page })
+    
+    // Matching URL: ?country=IN&keyword=...&page=0&secType=track&type=search
+    const rawData = await fetchGaana({
+      country: country,
+      keyword: keyword,
+      page: page,
+      secType: 'track',
+      type: 'search'
+    })
     return c.json(traverseAndDecrypt(rawData))
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
