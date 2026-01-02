@@ -2,7 +2,7 @@
  * @fileoverview Single-file Gaana API.
  * * Universal Root Endpoints:
  * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
- * 2. Search Handler: /?search={query} (Searches for Songs)
+ * 2. Search Handler: /?search={query}&page={0}&country={IN} (Song Search with params)
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
  * 2. Album Details: /api/albums
@@ -156,14 +156,14 @@ app.use('*', cors())
 
 /**
  * ROOT HANDLER:
- * 1. ?search={query} -> Search Songs
+ * 1. ?search={query} -> Search Songs (includes page, country)
  * 2. ?link={url} -> Detect and Fetch Song/Album/Label
  */
 app.get('/', async (c) => {
   const link = c.req.query('link')
   const search = c.req.query('search')
 
-  // --- 1. SEARCH HANDLER ---
+  // --- 1. SEARCH HANDLER (Full Parameters) ---
   if (search) {
     try {
       const page = c.req.query('page') || '0'
@@ -218,12 +218,12 @@ app.get('/', async (c) => {
     service: 'Gaana API',
     status: 'active',
     usage: {
-      universal_search: '/?search=Humane%20Sagar',
+      universal_search: '/?search=Humane%20Sagar&page=0&country=IN',
       universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
       song_details: '/api/songs?seokey=kudi-jach-gayi-14',
       album_details: '/api/albums?seokey=aau-ketedina-odia',
       label_albums: '/api/labels/albums?seokey=rajshri-music',
-      search: '/api/search/songs?keyword=Humane%20Sagar',
+      search: '/api/search/songs?keyword=Humane%20Sagar&page=0&country=IN',
       artist_songs: '/api/artists/songs?id=1242888',
       artist_albums: '/api/artists/albums?id=1'
     }
