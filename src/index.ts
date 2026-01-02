@@ -1,6 +1,8 @@
 /**
  * @fileoverview Single-file Gaana API.
- * * Universal Endpoint: /?link={url} (Auto-detects Song, Album, or Label)
+ * * Universal Root Endpoints:
+ * 1. Link Handler: /?link={url} (Auto-detects Song, Album, or Label)
+ * 2. Search Handler: /?search={query} (Searches for Songs)
  * * * Specific Endpoints:
  * 1. Song Details: /api/songs
  * 2. Album Details: /api/albums
@@ -153,58 +155,79 @@ const app = new Hono()
 app.use('*', cors())
 
 /**
- * ROOT HANDLER: Automatic detection based on ?link=...
- * Supports: Song, Album, Label
+ * ROOT HANDLER:
+ * 1. ?search={query} -> Search Songs
+ * 2. ?link={url} -> Detect and Fetch Song/Album/Label
  */
 app.get('/', async (c) => {
   const link = c.req.query('link')
+  const search = c.req.query('search')
 
-  // If no link is provided, show documentation
-  if (!link) {
-    return c.json({
-      service: 'Gaana API',
-      status: 'active',
-      usage: {
-        universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
-        song_details: '/api/songs?seokey=kudi-jach-gayi-14',
-        album_details: '/api/albums?seokey=aau-ketedina-odia',
-        label_albums: '/api/labels/albums?seokey=rajshri-music',
-        search: '/api/search/songs?keyword=Humane%20Sagar',
-        artist_songs: '/api/artists/songs?id=1242888',
-        artist_albums: '/api/artists/albums?id=1'
-      }
-    })
-  }
-
-  // Logic to detect type from URL structure
-  try {
-    let type = ''
-    let seokey = extractIdFromUrl(link)
-    let extraParams: Record<string, string> = {}
-
-    if (link.includes('/song/')) {
-      type = 'songDetail'
-    } else if (link.includes('/album/')) {
-      type = 'albumDetail'
-    } else if (link.includes('/music-label/')) {
-      type = 'musiclabelalbums'
-      extraParams = { page: '0', sorting: 'popularity' }
-    } else {
-      return c.json({ error: 'Unsupported link type. Use Song, Album, or Label URL.' }, 400)
+  // --- 1. SEARCH HANDLER ---
+  if (search) {
+    try {
+      const page = c.req.query('page') || '0'
+      const country = c.req.query('country') || 'IN'
+      
+      const rawData = await fetchGaana({
+        type: 'search',
+        secType: 'track',
+        country: country,
+        keyword: search,
+        page: page
+      })
+      
+      return c.json(traverseAndDecrypt(rawData))
+    } catch (error) {
+      return c.json({ error: 'Internal Server Error' }, 500)
     }
-
-    const rawData = await fetchGaana({
-      type: type,
-      seokey: seokey,
-      ...extraParams
-    })
-
-    const decryptedData = traverseAndDecrypt(rawData)
-    return c.json(decryptedData)
-
-  } catch (error) {
-    return c.json({ error: 'Internal Server Error' }, 500)
   }
+
+  // --- 2. LINK HANDLER ---
+  if (link) {
+    try {
+      let type = ''
+      let seokey = extractIdFromUrl(link)
+      let extraParams: Record<string, string> = {}
+
+      if (link.includes('/song/')) {
+        type = 'songDetail'
+      } else if (link.includes('/album/')) {
+        type = 'albumDetail'
+      } else if (link.includes('/music-label/')) {
+        type = 'musiclabelalbums'
+        extraParams = { page: '0', sorting: 'popularity' }
+      } else {
+        return c.json({ error: 'Unsupported link type. Use Song, Album, or Label URL.' }, 400)
+      }
+
+      const rawData = await fetchGaana({
+        type: type,
+        seokey: seokey,
+        ...extraParams
+      })
+
+      return c.json(traverseAndDecrypt(rawData))
+    } catch (error) {
+      return c.json({ error: 'Internal Server Error' }, 500)
+    }
+  }
+
+  // --- 3. DOCUMENTATION ---
+  return c.json({
+    service: 'Gaana API',
+    status: 'active',
+    usage: {
+      universal_search: '/?search=Humane%20Sagar',
+      universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
+      song_details: '/api/songs?seokey=kudi-jach-gayi-14',
+      album_details: '/api/albums?seokey=aau-ketedina-odia',
+      label_albums: '/api/labels/albums?seokey=rajshri-music',
+      search: '/api/search/songs?keyword=Humane%20Sagar',
+      artist_songs: '/api/artists/songs?id=1242888',
+      artist_albums: '/api/artists/albums?id=1'
+    }
+  })
 })
 
 // --- Specific API Endpoints ---
