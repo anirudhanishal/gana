@@ -1,9 +1,11 @@
 /**
- * @fileoverview Single-file Gaana API (Song Details Only).
- * * Requirement:
- * - API URL: https://gaana.com/apiv2?seokey={seokey}&type=songDetail
- * - Live URL: /api/songs?seokey={seokey}
- * - Output: Complete original data (decrypted), not just the first track.
+ * @fileoverview Single-file Gaana API (Songs & Albums).
+ * * 1. Song Details
+ * - API: https://gaana.com/apiv2?seokey={seokey}&type=songDetail
+ * - Route: /api/songs?seokey={seokey}
+ * * 2. Album Details
+ * - API: https://gaana.com/apiv2?seokey={seokey}&type=albumDetail
+ * - Route: /api/albums?seokey={seokey}
  */
 
 import { Hono } from 'hono'
@@ -11,10 +13,12 @@ import { cors } from 'hono/cors'
 import * as crypto from 'crypto'
 
 // ==========================================
-// 1. CONFIGURATION & CONSTANTS
+// 1. CONFIGURATION
 // ==========================================
 
-// AES-128-CBC Keys for Decryption (Standard Gaana Keys)
+const BASE_URL = 'https://gaana.com/apiv2'
+
+// AES-128-CBC Keys for Decryption
 const DEC_IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
 const DEC_KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
 
@@ -28,13 +32,12 @@ const USER_AGENTS = [
 // ==========================================
 
 /**
- * Decrypts encrypted stream URLs from Gaana.
+ * Decrypts encrypted stream URLs.
  */
 function decryptLink(encryptedData: string): string {
   try {
     if (!encryptedData || encryptedData.length < 20) return encryptedData
 
-    // Logic: Extract offset, slice IV, decode Base64, Decrypt AES-128-CBC
     const offset = parseInt(encryptedData[0], 10)
     if (isNaN(offset)) return encryptedData
 
@@ -47,10 +50,10 @@ function decryptLink(encryptedData: string): string {
     let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
     let rawText = decrypted.toString('utf-8')
 
-    // Clean up characters
+    // Clean up
     rawText = rawText.replace(/[^\x20-\x7E]/g, '')
 
-    // Fix HLS paths for playback
+    // Fix HLS paths
     if (rawText.includes('hls/')) {
       const pathStart = rawText.indexOf('hls/')
       const cleanPath = rawText.substring(pathStart)
@@ -65,7 +68,6 @@ function decryptLink(encryptedData: string): string {
 
 /**
  * Recursively finds and decrypts "message" fields inside "urls" objects.
- * This ensures the entire object structure is preserved, just with readable URLs.
  */
 function traverseAndDecrypt(data: any): any {
   if (!data || typeof data !== 'object') return data
@@ -80,7 +82,7 @@ function traverseAndDecrypt(data: any): any {
     }
   }
 
-  // Traverse children (Arrays and Objects)
+  // Traverse children
   for (const key in data) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
       const value = data[key]
@@ -93,12 +95,11 @@ function traverseAndDecrypt(data: any): any {
 }
 
 /**
- * Fetches data from Gaana with browser-like headers.
- * URL Pattern: https://gaana.com/apiv2?seokey={seokey}&type=songDetail
+ * Generic fetcher for Gaana API.
  */
-async function fetchSongDetails(seokey: string) {
+async function fetchGaanaData(seokey: string, type: 'songDetail' | 'albumDetail') {
   // Construct URL exactly as requested
-  const url = `https://gaana.com/apiv2?seokey=${seokey}&type=songDetail`
+  const url = `${BASE_URL}?seokey=${seokey}&type=${type}`
   
   const headers = {
     'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
@@ -112,49 +113,63 @@ async function fetchSongDetails(seokey: string) {
   return json
 }
 
+/**
+ * Helper to extract seokey from params
+ */
+function getSeokeyFromContext(c: any): string | null {
+  const seokey = c.req.query('seokey')
+  const urlParam = c.req.query('url')
+  
+  if (seokey) return seokey
+  
+  // Fallback extraction if user passes full url
+  if (urlParam) {
+     const parts = urlParam.split('/').filter(Boolean)
+     return parts[parts.length - 1]
+  }
+  return null
+}
+
 // ==========================================
 // 3. APP & ROUTES
 // ==========================================
 
 const app = new Hono()
 
-// Middleware
 app.use('*', cors())
 
 /**
- * Main Route: Song Details
+ * 1. Song Details Route
  * Endpoint: /api/songs?seokey=...
  */
 app.get('/api/songs', async (c) => {
   try {
-    // 1. Get Seokey
-    const seokey = c.req.query('seokey')
-    const urlParam = c.req.query('url')
-    
-    // Support generic 'url' param fallback logic if seokey missing
-    let finalSeokey = seokey
-    if (!finalSeokey && urlParam) {
-       // Simple extraction if user passes full gaana url
-       const parts = urlParam.split('/').filter(Boolean)
-       finalSeokey = parts[parts.length - 1]
-    }
+    const seokey = getSeokeyFromContext(c)
+    if (!seokey) return c.json({ error: 'Parameter "seokey" is required' }, 400)
 
-    if (!finalSeokey) {
-      return c.json({ error: 'Parameter "seokey" is required' }, 400)
-    }
-
-    // 2. Fetch from Gaana (Complete Object)
-    const rawData = await fetchSongDetails(finalSeokey)
-
-    // 3. Decrypt Everything (Preserving structure)
-    // We pass the entire rawData object, not rawData.tracks[0]
+    const rawData = await fetchGaanaData(seokey, 'songDetail')
     const decryptedData = traverseAndDecrypt(rawData)
 
-    // 4. Return Complete Original Data
     return c.json(decryptedData)
-    
   } catch (error) {
-    console.error(error)
+    return c.json({ error: 'Internal Server Error' }, 500)
+  }
+})
+
+/**
+ * 2. Album Details Route
+ * Endpoint: /api/albums?seokey=...
+ */
+app.get('/api/albums', async (c) => {
+  try {
+    const seokey = getSeokeyFromContext(c)
+    if (!seokey) return c.json({ error: 'Parameter "seokey" is required' }, 400)
+
+    const rawData = await fetchGaanaData(seokey, 'albumDetail')
+    const decryptedData = traverseAndDecrypt(rawData)
+
+    return c.json(decryptedData)
+  } catch (error) {
     return c.json({ error: 'Internal Server Error' }, 500)
   }
 })
@@ -164,9 +179,12 @@ app.get('/api/songs', async (c) => {
  */
 app.get('/', (c) => {
   return c.json({
-    service: 'Gaana Song Details API',
+    service: 'Gaana API (Songs & Albums)',
     status: 'active',
-    example: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho'
+    endpoints: {
+      song: '/api/songs?seokey=aankhon-ki-gustakhiyan-maaf-ho',
+      album: '/api/albums?seokey=hum-dil-de-chuke-sanam'
+    }
   })
 })
 
