@@ -76,17 +76,29 @@ function decryptLink(encryptedData: string): string {
 
 /**
  * Recursively traverses the API response to find and decrypt "message" fields.
- * specifically looking for the "urls" object structure used by Gaana.
+ * Handles both standard "urls" object and "stream_url" key-value patterns.
  */
 function traverseAndDecrypt(data: any): any {
   if (!data || typeof data !== 'object') return data
 
-  // Check for the specific "urls" object structure
+  // Pattern 1: Standard Song/Album Details
+  // Structure: "urls": { "auto": { "message": "..." } }
   if (data.urls && typeof data.urls === 'object' && !Array.isArray(data.urls)) {
     const qualities = ['auto', 'high', 'medium', 'low']
     for (const quality of qualities) {
       if (data.urls[quality]?.message) {
         data.urls[quality].message = decryptLink(data.urls[quality].message)
+      }
+    }
+  }
+
+  // Pattern 2: Artist Track List
+  // Structure: { "key": "stream_url", "value": { "medium": { "message": "..." } } }
+  if (data.key === 'stream_url' && data.value && typeof data.value === 'object') {
+    const qualities = ['auto', 'high', 'medium', 'low']
+    for (const quality of qualities) {
+      if (data.value[quality]?.message) {
+        data.value[quality].message = decryptLink(data.value[quality].message)
       }
     }
   }
