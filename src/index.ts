@@ -9,7 +9,7 @@
  * 3. Song Search: /api/search/songs
  * 4. Artist Song List: /api/artists/songs
  * 5. Artist Album List: /api/artists/albums
- * 6. Label Album List: /api/labels/albums
+ * 6. Label Album List: /api/labels/albums (Now with Smart Pagination)
  */
 
 import { Hono } from 'hono'
@@ -107,8 +107,7 @@ function traverseAndDecrypt(data: any): any {
 }
 
 /**
- * Applies slicing to the search results array inside the Gaana response structure.
- * Structure: { gr: [ { gd: [ ...tracks... ] } ] }
+ * Applies slicing to Search Results (Structure: gr -> gd)
  */
 function applySlice(data: any, start: number, end: number | undefined): any {
   if (!data) return data
@@ -116,12 +115,22 @@ function applySlice(data: any, start: number, end: number | undefined): any {
   if (data.gr && Array.isArray(data.gr)) {
     for (const group of data.gr) {
       if (group.gd && Array.isArray(group.gd)) {
-        // Apply the local slice
         group.gd = group.gd.slice(start, end)
       }
     }
   }
+  return data
+}
+
+/**
+ * Applies slicing to Label/List Results (Structure: entities)
+ */
+function applySliceToEntities(data: any, start: number, end: number | undefined): any {
+  if (!data) return data
   
+  if (data.entities && Array.isArray(data.entities)) {
+    data.entities = data.entities.slice(start, end)
+  }
   return data
 }
 
@@ -188,23 +197,18 @@ app.get('/', async (c) => {
     try {
       const page = c.req.query('page') || '0'
       const country = c.req.query('country') || 'IN'
-      // Default limit is 10 if not specified
       const limit = c.req.query('limit') || '10'
 
       let gaanaPage = page
       let sliceStart = 0
       let sliceEnd = undefined
 
-      // Smart Pagination Logic (Always runs since limit defaults to 10)
       if (limit) {
         const limitNum = parseInt(limit, 10)
         const pageNum = parseInt(page, 10) || 0
         const totalOffset = pageNum * limitNum
         
-        // Calculate the actual page index for Gaana
         gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
-        
-        // Calculate local slice indices
         sliceStart = totalOffset % GAANA_PAGE_SIZE
         sliceEnd = sliceStart + limitNum
       }
@@ -265,7 +269,7 @@ app.get('/', async (c) => {
       universal_link: '/?link=https://gaana.com/song/kudi-jach-gayi-14',
       song_details: '/api/songs?seokey=kudi-jach-gayi-14',
       album_details: '/api/albums?seokey=aau-ketedina-odia',
-      label_albums: '/api/labels/albums?seokey=rajshri-music',
+      label_albums: '/api/labels/albums?seokey=rajshri-music&page=0&limit=10',
       search: '/api/search/songs?keyword=Humane%20Sagar&page=0&limit=10',
       artist_songs: '/api/artists/songs?id=1242888',
       artist_albums: '/api/artists/albums?id=1'
@@ -301,7 +305,6 @@ app.get('/api/search/songs', async (c) => {
     const keyword = c.req.query('keyword')
     const page = c.req.query('page') || '0'
     const country = c.req.query('country') || 'IN'
-    // Default limit is 10 if not specified
     const limit = c.req.query('limit') || '10'
 
     if (!keyword) return c.json({ error: 'keyword required' }, 400)
@@ -315,15 +318,11 @@ app.get('/api/search/songs', async (c) => {
       const pageNum = parseInt(page, 10) || 0
       const totalOffset = pageNum * limitNum
       
-      // Calculate Gaana API page (assuming 20 items per page)
       gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
-      
-      // Calculate local slice
       sliceStart = totalOffset % GAANA_PAGE_SIZE
       sliceEnd = sliceStart + limitNum
     }
     
-    // Strict Order: country -> page -> secType -> type -> keyword
     const rawData = await fetchGaana({
       country: country,
       page: gaanaPage,
@@ -363,15 +362,41 @@ app.get('/api/artists/albums', async (c) => {
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
-// 6. Label Albums
+// 6. Label Albums (With Smart Pagination)
 app.get('/api/labels/albums', async (c) => {
   try {
     const seokey = getSeokeyFromContext(c)
     const page = c.req.query('page') || '0'
     const sorting = c.req.query('sorting') || 'popularity'
+    const limit = c.req.query('limit') || '10'
+
     if (!seokey) return c.json({ error: 'seokey/url required' }, 400)
-    const rawData = await fetchGaana({ type: 'musiclabelalbums', seokey, page, sorting })
-    return c.json(traverseAndDecrypt(rawData))
+
+    let gaanaPage = page
+    let sliceStart = 0
+    let sliceEnd = undefined
+
+    if (limit) {
+      const limitNum = parseInt(limit, 10)
+      const pageNum = parseInt(page, 10) || 0
+      const totalOffset = pageNum * limitNum
+      
+      gaanaPage = Math.floor(totalOffset / GAANA_PAGE_SIZE).toString()
+      sliceStart = totalOffset % GAANA_PAGE_SIZE
+      sliceEnd = sliceStart + limitNum
+    }
+
+    const rawData = await fetchGaana({ 
+      type: 'musiclabelalbums', 
+      seokey, 
+      page: gaanaPage, 
+      sorting 
+    })
+    
+    const decrypted = traverseAndDecrypt(rawData)
+    const limitedData = applySliceToEntities(decrypted, sliceStart, sliceEnd)
+    
+    return c.json(limitedData)
   } catch (error) { return c.json({ error: 'Error' }, 500) }
 })
 
