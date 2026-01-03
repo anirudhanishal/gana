@@ -1,10 +1,10 @@
 /**
  * @fileoverview Single-file Gaana API.
  * * * * DIRECT ROOT MAPPINGS (Strict Priority):
- * 1. Label Albums:  /?labels={seokey}
- * 2. Artist Songs:  /?artistssongsid={id}
- * 3. Artist Albums: /?artistsalbumsid={id}
- * 4. Song Search:   /?search={query}
+ * 1. Label Albums:  /?labels={seokey}&page={0}&limit={10}&sorting={popularity}
+ * 2. Artist Songs:  /?artistssongsid={id}&page={0}&limit={10}&sortBy={popularity}
+ * 3. Artist Albums: /?artistsalbumsid={id}&page={0}&limit={10}&sortBy={popularity}
+ * 4. Song Search:   /?search={query}&page={0}&limit={10}
  * 5. Universal Link:/?link={url} (Auto-detects Song/Album/Label)
  * * * * * API ENDPOINTS (Legacy Support):
  * /api/songs, /api/albums, /api/search/songs, /api/artists/songs, /api/artists/albums, /api/labels/albums
@@ -127,16 +127,6 @@ async function fetchGaana(queryParams: Record<string, string>) {
   return json
 }
 
-function getSeokeyFromContext(c: any): string | null {
-  const rawInput = c.req.query('seokey') || c.req.query('url')
-  if (!rawInput) return null
-  if (rawInput.includes('/')) {
-     const parts = rawInput.split('/').filter((p: string) => p.trim() !== '')
-     return parts.length > 0 ? parts[parts.length - 1] : null
-  }
-  return rawInput
-}
-
 function extractIdFromUrl(url: string): string {
   const parts = url.split('/').filter((p) => p.trim() !== '')
   return parts.length > 0 ? parts[parts.length - 1] : ''
@@ -152,6 +142,16 @@ function getPagination(pageStr: string | undefined, limitStr: string | undefined
   const sliceEnd = sliceStart + limit
   
   return { gaanaPage, sliceStart, sliceEnd }
+}
+
+function getSeokeyFromContext(c: any): string | null {
+  const rawInput = c.req.query('seokey') || c.req.query('url')
+  if (!rawInput) return null
+  if (rawInput.includes('/')) {
+     const parts = rawInput.split('/').filter((p: string) => p.trim() !== '')
+     return parts.length > 0 ? parts[parts.length - 1] : null
+  }
+  return rawInput
 }
 
 // ==========================================
@@ -170,8 +170,10 @@ app.get('/', async (c) => {
   // Common Params
   const page = q.page || '0'
   const limit = q.limit || '10'
-  const sorting = q.sorting || 'popularity'
   const country = q.country || 'IN'
+  
+  // Allow both 'sorting' (labels) and 'sortBy' (artists) to control order
+  const sorting = q.sorting || q.sortBy || 'popularity'
 
   try {
     // 1. Label Albums (?labels={seokey})
@@ -183,7 +185,7 @@ app.get('/', async (c) => {
         type: 'musiclabelalbums',
         seokey: q.labels,
         page: gaanaPage,
-        sorting: sorting
+        sorting: sorting // Gaana expects 'sorting' for labels
       })
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
@@ -198,7 +200,7 @@ app.get('/', async (c) => {
         id: q.artistssongsid,
         order: '0',
         page: gaanaPage,
-        sortBy: sorting
+        sortBy: sorting // Gaana expects 'sortBy' for artist tracks
       })
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
@@ -213,7 +215,7 @@ app.get('/', async (c) => {
         id: q.artistsalbumsid,
         order: '0',
         page: gaanaPage,
-        sortBy: sorting
+        sortBy: sorting // Gaana expects 'sortBy' for artist albums
       })
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
@@ -271,9 +273,9 @@ app.get('/', async (c) => {
       service: 'Gaana API',
       status: 'active',
       usage: {
-        labels: '/?labels=amara-muzik-one&page=0&limit=10',
-        artist_songs: '/?artistssongsid=1242888&page=0&limit=10',
-        artist_albums: '/?artistsalbumsid=1&page=0&limit=10',
+        labels: '/?labels=amara-muzik-one&page=0&limit=10&sorting=popularity',
+        artist_songs: '/?artistssongsid=1242888&page=0&limit=10&sortBy=popularity',
+        artist_albums: '/?artistsalbumsid=1&page=0&limit=10&sortBy=popularity',
         search: '/?search=Humane%20Sagar&limit=10',
         link: '/?link=https://gaana.com/song/kudi-jach-gayi-14'
       }
