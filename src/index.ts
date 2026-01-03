@@ -1,9 +1,9 @@
 /**
  * @fileoverview Single-file Gaana API.
  * * * * DIRECT ROOT MAPPINGS (Strict Priority):
- * 1. Label Albums:  /?labels={seokey}&page={0}&limit={10}&sorting={popularity}&language={Odia}
+ * 1. Label Albums:  /?labels={seokey}&page={0}&limit={10}&sorting={popularity}
  * 2. Artist Songs:  /?artistssongsid={id}&page={0}&limit={10}&sortBy={popularity}
- * 3. Artist Albums: /?artistsalbumsid={id}&page={0}&limit={10}&sortBy={popularity}&language={Odia}
+ * 3. Artist Albums: /?artistsalbumsid={id}&page={0}&limit={10}&sortBy={popularity}
  * 4. Song Search:   /?search={query}&page={0}&limit={10}
  * 5. Universal Link:/?link={url} (Auto-detects Song/Album/Label)
  * * * * * API ENDPOINTS (Legacy Support):
@@ -37,15 +37,17 @@ const USER_AGENTS = [
 
 /**
  * Returns the correct batch size based on Gaana API specifics.
- * - artistAlbumList: 40 items
- * - musiclabelalbums: 40 items
- * - artistTrackList: 20 items
- * - search: 20 items
+ * This logic ensures deep pagination works correctly for different list types.
+ * * - artistAlbumList: 40 items per page (e.g. Page 19, Limit 2 => Offset 38 => Gaana Page 0, items 39-40)
+ * - musiclabelalbums: 40 items per page
+ * - artistTrackList: 20 items per page (e.g. Page 9, Limit 2 => Offset 18 => Gaana Page 0, items 19-20)
+ * - search: 20 items per page
  */
 function getBatchSize(type: string): number {
   if (type === 'artistAlbumList' || type === 'musiclabelalbums') {
     return 40
   }
+  // artistTrackList, search, and others default to 20
   return 20
 }
 
@@ -138,12 +140,20 @@ function extractIdFromUrl(url: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : ''
 }
 
+/**
+ * Smart Pagination Calculator.
+ * Calculates which Gaana page to fetch and how to slice the results
+ * to support custom limits (e.g. limit=2) across standard batches (20/40).
+ */
 function getPagination(pageStr: string | undefined, limitStr: string | undefined, batchSize: number) {
   const limit = parseInt(limitStr || '10', 10) || 10
   const page = parseInt(pageStr || '0', 10) || 0
   const totalOffset = page * limit
   
+  // Calculate upstream page index (Which batch of 20/40 contains our data?)
   const gaanaPage = Math.floor(totalOffset / batchSize).toString()
+  
+  // Calculate local slice indices (Where in that batch does our data start?)
   const sliceStart = totalOffset % batchSize
   const sliceEnd = sliceStart + limit
   
@@ -177,13 +187,12 @@ app.get('/', async (c) => {
   const page = q.page || '0'
   const limit = q.limit || '10'
   const country = q.country || 'IN'
-  const language = q.language || '' // Added Language Param
   
   // Allow both 'sorting' (labels) and 'sortBy' (artists) to control order
   const sorting = q.sorting || q.sortBy || 'popularity'
 
   try {
-    // 1. Label Albums (?labels={seokey})
+    // 1. Label Albums (?labels={seokey}) - Batch 40
     if (q.labels) {
       const batchSize = getBatchSize('musiclabelalbums') // 40
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
@@ -192,13 +201,12 @@ app.get('/', async (c) => {
         type: 'musiclabelalbums',
         seokey: q.labels,
         page: gaanaPage,
-        sorting: sorting,
-        language: language // Added language
+        sorting: sorting
       })
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 2. Artist Songs (?artistssongsid={id})
+    // 2. Artist Songs (?artistssongsid={id}) - Batch 20
     if (q.artistssongsid) {
       const batchSize = getBatchSize('artistTrackList') // 20
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
@@ -208,13 +216,12 @@ app.get('/', async (c) => {
         id: q.artistssongsid,
         order: '0',
         page: gaanaPage,
-        sortBy: sorting,
-        language: language
+        sortBy: sorting
       })
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 3. Artist Albums (?artistsalbumsid={id})
+    // 3. Artist Albums (?artistsalbumsid={id}) - Batch 40
     if (q.artistsalbumsid) {
       const batchSize = getBatchSize('artistAlbumList') // 40
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
@@ -224,13 +231,12 @@ app.get('/', async (c) => {
         id: q.artistsalbumsid,
         order: '0',
         page: gaanaPage,
-        sortBy: sorting,
-        language: language // Added language
+        sortBy: sorting
       })
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 4. Song Search (?search={query})
+    // 4. Song Search (?search={query}) - Batch 20
     if (q.search) {
       const batchSize = getBatchSize('search') // 20
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
@@ -259,7 +265,6 @@ app.get('/', async (c) => {
       } else if (q.link.includes('/music-label/')) {
         fetchParams.type = 'musiclabelalbums'
         fetchParams.sorting = sorting
-        fetchParams.language = language // Added language support to links
         isList = true
         listType = 'musiclabelalbums'
       } else {
@@ -267,7 +272,7 @@ app.get('/', async (c) => {
       }
 
       if (isList) {
-        const batchSize = getBatchSize(listType) // 40 for labels
+        const batchSize = getBatchSize(listType)
         const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
         fetchParams.page = gaanaPage
         
@@ -284,9 +289,9 @@ app.get('/', async (c) => {
       service: 'Gaana API',
       status: 'active',
       usage: {
-        labels: '/?labels=amara-muzik-one&page=0&limit=10&sorting=popularity&language=Odia',
+        labels: '/?labels=amara-muzik-one&page=0&limit=10&sorting=popularity',
         artist_songs: '/?artistssongsid=1242888&page=0&limit=10&sortBy=popularity',
-        artist_albums: '/?artistsalbumsid=1&page=0&limit=10&sortBy=popularity&language=Hindi',
+        artist_albums: '/?artistsalbumsid=1&page=0&limit=10&sortBy=popularity',
         search: '/?search=Humane%20Sagar&limit=10',
         link: '/?link=https://gaana.com/song/kudi-jach-gayi-14'
       }
@@ -315,13 +320,7 @@ app.get('/api/labels/albums', async (c) => {
   const seokey = getSeokeyFromContext(c)
   if (!seokey) return c.json({ error: 'seokey required' }, 400)
   const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 40)
-  const data = await fetchGaana({ 
-    type: 'musiclabelalbums', 
-    seokey, 
-    page: gaanaPage, 
-    sorting: c.req.query('sorting')||'popularity',
-    language: c.req.query('language')||'' // Added language
-  })
+  const data = await fetchGaana({ type: 'musiclabelalbums', seokey, page: gaanaPage, sorting: c.req.query('sorting')||'popularity' })
   return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
 })
 
@@ -337,14 +336,7 @@ app.get('/api/artists/songs', async (c) => {
   const id = c.req.query('id')
   if (!id) return c.json({ error: 'id required' }, 400)
   const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 20)
-  const data = await fetchGaana({ 
-    type: 'artistTrackList', 
-    id, 
-    order: '0', 
-    page: gaanaPage, 
-    sortBy: c.req.query('sortBy')||'popularity',
-    language: c.req.query('language')||'' 
-  })
+  const data = await fetchGaana({ type: 'artistTrackList', id, order: '0', page: gaanaPage, sortBy: c.req.query('sortBy')||'popularity' })
   return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
 })
 
@@ -352,14 +344,7 @@ app.get('/api/artists/albums', async (c) => {
   const id = c.req.query('id')
   if (!id) return c.json({ error: 'id required' }, 400)
   const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 40)
-  const data = await fetchGaana({ 
-    type: 'artistAlbumList', 
-    id, 
-    order: '0', 
-    page: gaanaPage, 
-    sortBy: c.req.query('sortBy')||'popularity',
-    language: c.req.query('language')||'' // Added language
-  })
+  const data = await fetchGaana({ type: 'artistAlbumList', id, order: '0', page: gaanaPage, sortBy: c.req.query('sortBy')||'popularity' })
   return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
 })
 
