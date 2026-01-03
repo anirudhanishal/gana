@@ -1,10 +1,10 @@
 /**
  * @fileoverview Single-file Gaana API.
  * * * * DIRECT ROOT MAPPINGS (Strict Priority):
- * 1. Label Albums:  /?labels={seokey}
- * 2. Artist Songs:  /?artistssongsid={id}
- * 3. Artist Albums: /?artistsalbumsid={id}
- * 4. Song Search:   /?search={query}
+ * 1. Label Albums:  /?labels={seokey}&page={0}&limit={10}&sorting={popularity}
+ * 2. Artist Songs:  /?artistssongsid={id}&page={0}&limit={10}&sortBy={popularity}
+ * 3. Artist Albums: /?artistsalbumsid={id}&page={0}&limit={10}&sortBy={popularity}
+ * 4. Song Search:   /?search={query}&page={0}&limit={10}
  * 5. Universal Link:/?link={url} (Auto-detects Song/Album/Label)
  * * * * * API ENDPOINTS (Legacy Support):
  * /api/songs, /api/albums, /api/search/songs, /api/artists/songs, /api/artists/albums, /api/labels/albums
@@ -35,13 +35,13 @@ const USER_AGENTS = [
 // 2. HELPER FUNCTIONS
 // ==========================================
 
+/**
+ * Returns the correct batch size for Gaana API pagination.
+ * FIXED: All lists (Artist Songs, Artist Albums, Labels) and Search 
+ * actually return 20 items per page by default. 
+ * Using 50 caused "empty entities" on deep pagination.
+ */
 function getBatchSize(type: string): number {
-  // Label Albums return 50 items per page
-  if (type === 'musiclabelalbums') {
-    return 50
-  }
-  // Artist Lists, Search, and others default to 20 items per page
-  // Setting this to 20 fixes the "No data found" issue on deeper pages
   return 20
 }
 
@@ -174,13 +174,13 @@ app.get('/', async (c) => {
   const limit = q.limit || '10'
   const country = q.country || 'IN'
   
-  // Allow both 'sorting' (labels) and 'sortBy' (artists) to control order
+  // Allow both 'sorting' (labels) and 'sortBy' (artists)
   const sorting = q.sorting || q.sortBy || 'popularity'
 
   try {
     // 1. Label Albums (?labels={seokey})
     if (q.labels) {
-      const batchSize = getBatchSize('musiclabelalbums') // 50
+      const batchSize = getBatchSize('musiclabelalbums') // Now 20
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
       
       const rawData = await fetchGaana({
@@ -194,7 +194,7 @@ app.get('/', async (c) => {
 
     // 2. Artist Songs (?artistssongsid={id})
     if (q.artistssongsid) {
-      const batchSize = getBatchSize('artistTrackList') // 20
+      const batchSize = getBatchSize('artistTrackList') // Now 20
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
 
       const rawData = await fetchGaana({
@@ -209,7 +209,7 @@ app.get('/', async (c) => {
 
     // 3. Artist Albums (?artistsalbumsid={id})
     if (q.artistsalbumsid) {
-      const batchSize = getBatchSize('artistAlbumList') // 20 (Fixed)
+      const batchSize = getBatchSize('artistAlbumList') // Now 20
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
 
       const rawData = await fetchGaana({
@@ -258,7 +258,7 @@ app.get('/', async (c) => {
       }
 
       if (isList) {
-        const batchSize = getBatchSize(listType)
+        const batchSize = getBatchSize(listType) // 20
         const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
         fetchParams.page = gaanaPage
         
@@ -305,7 +305,7 @@ app.get('/api/albums', async (c) => {
 app.get('/api/labels/albums', async (c) => {
   const seokey = getSeokeyFromContext(c)
   if (!seokey) return c.json({ error: 'seokey required' }, 400)
-  const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 50)
+  const { gaanaPage, sliceStart, sliceEnd } = getPagination(c.req.query('page'), c.req.query('limit'), 20)
   const data = await fetchGaana({ type: 'musiclabelalbums', seokey, page: gaanaPage, sorting: c.req.query('sorting')||'popularity' })
   return c.json(applySliceToEntities(traverseAndDecrypt(data), sliceStart, sliceEnd))
 })
