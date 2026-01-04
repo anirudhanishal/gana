@@ -1,27 +1,9 @@
-/**
- * @fileoverview Single-file Gaana API.
- * * * * DIRECT ROOT MAPPINGS (Strict Priority):
- * 1. Label Albums:  /?labels={seokey}&page={0}&limit={10}&sorting={popularity}
- * 2. Artist Songs:  /?artistssongsid={id}&page={0}&limit={10}&sortBy={popularity}
- * 3. Artist Albums: /?artistsalbumsid={id}&page={0}&limit={10}&sortBy={popularity}
- * 4. Song Search:   /?search={query}&page={0}&limit={10}
- * 5. Universal Link:/?link={url} (Auto-detects Song/Album/Label)
- * * * * * API ENDPOINTS (Legacy Support):
- * /api/songs, /api/albums, /api/search/songs, /api/artists/songs, /api/artists/albums, /api/labels/albums
- */
-
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import * as crypto from 'crypto'
 
-// ==========================================
-// 1. CONFIGURATION
-// ==========================================
-
 const BASE_URL = 'https://gaana.com/apiv2'
 
-// AES-128-CBC Keys for Decryption
-const DEC_IV = Buffer.from('xC4dmVJAq14BfntX', 'utf-8')
 const DEC_KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
 
 const USER_AGENTS = [
@@ -31,45 +13,35 @@ const USER_AGENTS = [
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
-// ==========================================
-// 2. HELPER FUNCTIONS
-// ==========================================
-
-/**
- * Returns the correct batch size based on Gaana API specifics.
- * This logic ensures deep pagination works correctly for different list types.
- * * - artistAlbumList: 40 items per page (e.g. Page 19, Limit 2 => Offset 38 => Gaana Page 0, items 39-40)
- * - musiclabelalbums: 40 items per page
- * - artistTrackList: 20 items per page (e.g. Page 9, Limit 2 => Offset 18 => Gaana Page 0, items 19-20)
- * - search: 20 items per page
- */
 function getBatchSize(type: string): number {
   if (type === 'artistAlbumList' || type === 'musiclabelalbums') {
     return 40
   }
-  // artistTrackList, search, and others default to 20
   return 20
 }
 
 function decryptLink(encryptedData: string): string {
   try {
-    if (!encryptedData || encryptedData.length < 20) return encryptedData
+    if (!encryptedData) return encryptedData
+    encryptedData = encryptedData.trim()
+    const BLOCK_SIZE = 16
     const offset = parseInt(encryptedData[0], 10)
     if (isNaN(offset)) return encryptedData
-    const ciphertextB64 = encryptedData.substring(offset + 16)
+
+    const ivRaw = encryptedData.substring(offset, offset + BLOCK_SIZE)
+    const iv = Buffer.from(ivRaw, 'utf-8')
+
+    const ciphertextB64 = encryptedData.substring(offset + BLOCK_SIZE)
     const ciphertext = Buffer.from(ciphertextB64, 'base64')
-    const decipher = crypto.createDecipheriv('aes-128-cbc', DEC_KEY, DEC_IV)
-    decipher.setAutoPadding(false)
+
+    const decipher = crypto.createDecipheriv('aes-128-cbc', DEC_KEY, iv)
+    decipher.setAutoPadding(true)
     let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-    let rawText = decrypted.toString('utf-8')
-    rawText = rawText.replace(/[^\x20-\x7E]/g, '')
-    if (rawText.includes('hls/')) {
-      const pathStart = rawText.indexOf('hls/')
-      const cleanPath = rawText.substring(pathStart)
-      return `https://vodhlsgaana-ebw.akamaized.net/${cleanPath}`
-    }
-    return rawText || encryptedData
-  } catch (e) { return encryptedData }
+
+    return decrypted.toString('utf-8')
+  } catch (e) {
+    return encryptedData
+  }
 }
 
 function traverseAndDecrypt(data: any): any {
@@ -140,20 +112,13 @@ function extractIdFromUrl(url: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : ''
 }
 
-/**
- * Smart Pagination Calculator.
- * Calculates which Gaana page to fetch and how to slice the results
- * to support custom limits (e.g. limit=2) across standard batches (20/40).
- */
 function getPagination(pageStr: string | undefined, limitStr: string | undefined, batchSize: number) {
   const limit = parseInt(limitStr || '10', 10) || 10
   const page = parseInt(pageStr || '0', 10) || 0
   const totalOffset = page * limit
   
-  // Calculate upstream page index (Which batch of 20/40 contains our data?)
   const gaanaPage = Math.floor(totalOffset / batchSize).toString()
   
-  // Calculate local slice indices (Where in that batch does our data start?)
   const sliceStart = totalOffset % batchSize
   const sliceEnd = sliceStart + limit
   
@@ -170,31 +135,21 @@ function getSeokeyFromContext(c: any): string | null {
   return rawInput
 }
 
-// ==========================================
-// 3. APP & ROUTES
-// ==========================================
-
 const app = new Hono()
 app.use('*', cors())
 
-/**
- * ROOT HANDLER: Strictly Enforced Priority Order
- */
 app.get('/', async (c) => {
   const q = c.req.query()
   
-  // Common Params
   const page = q.page || '0'
   const limit = q.limit || '10'
   const country = q.country || 'IN'
   
-  // Allow both 'sorting' (labels) and 'sortBy' (artists) to control order
   const sorting = q.sorting || q.sortBy || 'popularity'
 
   try {
-    // 1. Label Albums (?labels={seokey}) - Batch 40
     if (q.labels) {
-      const batchSize = getBatchSize('musiclabelalbums') // 40
+      const batchSize = getBatchSize('musiclabelalbums')
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
       
       const rawData = await fetchGaana({
@@ -206,9 +161,8 @@ app.get('/', async (c) => {
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 2. Artist Songs (?artistssongsid={id}) - Batch 20
     if (q.artistssongsid) {
-      const batchSize = getBatchSize('artistTrackList') // 20
+      const batchSize = getBatchSize('artistTrackList')
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
 
       const rawData = await fetchGaana({
@@ -221,9 +175,8 @@ app.get('/', async (c) => {
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 3. Artist Albums (?artistsalbumsid={id}) - Batch 40
     if (q.artistsalbumsid) {
-      const batchSize = getBatchSize('artistAlbumList') // 40
+      const batchSize = getBatchSize('artistAlbumList')
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
 
       const rawData = await fetchGaana({
@@ -236,9 +189,8 @@ app.get('/', async (c) => {
       return c.json(applySliceToEntities(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 4. Song Search (?search={query}) - Batch 20
     if (q.search) {
-      const batchSize = getBatchSize('search') // 20
+      const batchSize = getBatchSize('search')
       const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
 
       const rawData = await fetchGaana({
@@ -251,7 +203,6 @@ app.get('/', async (c) => {
       return c.json(applySlice(traverseAndDecrypt(rawData), sliceStart, sliceEnd))
     }
 
-    // 5. Universal Link (?link={url})
     if (q.link) {
       const seokey = extractIdFromUrl(q.link)
       let fetchParams: any = { seokey }
@@ -284,7 +235,6 @@ app.get('/', async (c) => {
       }
     }
 
-    // Documentation
     return c.json({
       service: 'Gaana API',
       status: 'active',
@@ -301,8 +251,6 @@ app.get('/', async (c) => {
     return c.json({ error: 'Internal Server Error' }, 500)
   }
 })
-
-// --- SPECIFIC API ROUTES (Standard wrappers for specific logic) ---
 
 app.get('/api/songs', async (c) => {
   const seokey = getSeokeyFromContext(c)
