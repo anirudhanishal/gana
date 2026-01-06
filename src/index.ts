@@ -20,7 +20,7 @@ import * as crypto from 'crypto'
 
 const BASE_URL = 'https://gaana.com/apiv2'
 
-// Key for Decryption
+// AES-128-CBC Key
 const DEC_KEY = Buffer.from('gy1t#b@jl(b$wtme', 'utf-8')
 
 const USER_AGENTS = [
@@ -36,87 +36,86 @@ const USER_AGENTS = [
 
 /**
  * Returns the correct batch size based on Gaana API specifics.
- * - artistAlbumList: 40 items
- * - musiclabelalbums: 40 items
- * - artistTrackList: 20 items
- * - search: 20 items
+ * This logic ensures deep pagination works correctly for different list types.
+ * * - artistAlbumList: 40 items per page (e.g. Page 19, Limit 2 => Offset 38 => Gaana Page 0, items 39-40)
+ * - musiclabelalbums: 40 items per page
+ * - artistTrackList: 20 items per page (e.g. Page 9, Limit 2 => Offset 18 => Gaana Page 0, items 19-20)
+ * - search: 20 items per page
  */
 function getBatchSize(type: string): number {
   if (type === 'artistAlbumList' || type === 'musiclabelalbums') {
     return 40
   }
+  // artistTrackList, search, and others default to 20
   return 20
 }
 
 /**
- * Decrypts encrypted stream URLs using AES-128-CBC with Dynamic IV extraction.
- * Logic:
- * 1. Extract Offset from 1st char.
- * 2. Extract IV from string [Offset : Offset+16]
- * 3. Extract Ciphertext from [Offset+16 : end]
- * 4. Decrypt & Unpad
+ * Decrypts Gaana encrypted links using AES-128-CBC with dynamic IV extraction.
+ * Logic mirrors Python implementation:
+ * 1. Parse offset from 1st char.
+ * 2. Extract IV from string at [offset : offset+16].
+ * 3. Extract Ciphertext from [offset+16 : end].
  */
 function decryptLink(encryptedData: string): string {
   try {
-    if (!encryptedData || encryptedData.length < 20) return encryptedData
+    if (!encryptedData || typeof encryptedData !== 'string' || encryptedData.length < 20) {
+      return encryptedData
+    }
 
-    // 1. Calculate offset from the first character
-    const offset = parseInt(encryptedData[0], 10)
+    const trimmedData = encryptedData.trim()
+    
+    // 1. Get Offset
+    const offset = parseInt(trimmedData[0], 10)
     if (isNaN(offset)) return encryptedData
 
-    // 2. Extract the raw IV using the offset (16 bytes)
-    const ivStr = encryptedData.substring(offset, offset + 16)
+    // 2. Extract IV
+    // Python: ivRaw = encrypted_data[offset:offset + self.BLOCK_SIZE]
+    const ivStr = trimmedData.substring(offset, offset + 16)
     const iv = Buffer.from(ivStr, 'utf-8')
 
-    // 3. Calculate ciphertext (Base64 decode)
-    const ciphertextB64 = encryptedData.substring(offset + 16)
-    const ciphertext = Buffer.from(ciphertextB64, 'base64')
+    // 3. Extract Ciphertext
+    // Python: cipher_text_b64 = encrypted_data[offset + self.BLOCK_SIZE:]
+    const ciphertextB64 = trimmedData.substring(offset + 16)
 
-    // 4. Decrypt ciphertext
+    // 4. Decrypt
     const decipher = crypto.createDecipheriv('aes-128-cbc', DEC_KEY, iv)
-    decipher.setAutoPadding(false) // We handle unpadding/cleanup manually for robustness
+    decipher.setAutoPadding(true) // PKCS#7 padding is handled automatically by Node
+    
+    let decrypted = Buffer.concat([decipher.update(ciphertextB64, 'base64'), decipher.final()])
+    const rawText = decrypted.toString('utf-8')
 
-    let decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-    let rawText = decrypted.toString('utf-8')
-
-    // Cleanup: Remove non-printable characters (effectively handles PKCS7 unpadding for text URLs)
-    rawText = rawText.replace(/[^\x20-\x7E]/g, '')
-
-    // Fix Akamai HLS paths
+    // 5. Post-Processing (HLS URL fix)
     if (rawText.includes('hls/')) {
       const pathStart = rawText.indexOf('hls/')
       const cleanPath = rawText.substring(pathStart)
       return `https://vodhlsgaana-ebw.akamaized.net/${cleanPath}`
     }
-    
+
     return rawText || encryptedData
   } catch (e) {
+    // If decryption fails (padding error or bad key), return original
     return encryptedData
   }
 }
 
+/**
+ * Recursively traverses the JSON object.
+ * If a key is named "message" and holds a string, it attempts to decrypt it.
+ */
 function traverseAndDecrypt(data: any): any {
   if (!data || typeof data !== 'object') return data
-  if (data.urls && typeof data.urls === 'object' && !Array.isArray(data.urls)) {
-    const qualities = ['auto', 'high', 'medium', 'low']
-    for (const quality of qualities) {
-      if (data.urls[quality]?.message) {
-        data.urls[quality].message = decryptLink(data.urls[quality].message)
-      }
-    }
-  }
-  if (data.key === 'stream_url' && data.value && typeof data.value === 'object') {
-    const qualities = ['auto', 'high', 'medium', 'low']
-    for (const quality of qualities) {
-      if (data.value[quality]?.message) {
-        data.value[quality].message = decryptLink(data.value[quality].message)
-      }
-    }
-  }
+  
   for (const key in data) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
       const value = data[key]
-      if (typeof value === 'object' && value !== null) {
+
+      // 1. Decrypt if key is "message" and value is string
+      if (key === 'message' && typeof value === 'string') {
+        data[key] = decryptLink(value)
+      } 
+      // 2. Recurse if value is an object or array
+      else if (typeof value === 'object' && value !== null) {
         traverseAndDecrypt(value)
       }
     }
@@ -163,12 +162,20 @@ function extractIdFromUrl(url: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : ''
 }
 
+/**
+ * Smart Pagination Calculator.
+ * Calculates which Gaana page to fetch and how to slice the results
+ * to support custom limits (e.g. limit=2) across standard batches (20/40).
+ */
 function getPagination(pageStr: string | undefined, limitStr: string | undefined, batchSize: number) {
   const limit = parseInt(limitStr || '10', 10) || 10
   const page = parseInt(pageStr || '0', 10) || 0
   const totalOffset = page * limit
   
+  // Calculate upstream page index (Which batch of 20/40 contains our data?)
   const gaanaPage = Math.floor(totalOffset / batchSize).toString()
+  
+  // Calculate local slice indices (Where in that batch does our data start?)
   const sliceStart = totalOffset % batchSize
   const sliceEnd = sliceStart + limit
   
@@ -287,7 +294,7 @@ app.get('/', async (c) => {
       }
 
       if (isList) {
-        const batchSize = getBatchSize(listType) // 40 for labels
+        const batchSize = getBatchSize(listType)
         const { gaanaPage, sliceStart, sliceEnd } = getPagination(page, limit, batchSize)
         fetchParams.page = gaanaPage
         
